@@ -955,6 +955,9 @@ def test_phage_qc_metrics_groups_training_metrics_by_prompt_prefix_length():
 
 def test_scored_records_exclude_full_sequence_from_rollout_metadata():
     """Rollout metadata should carry scalar scores/status, not full generated sequences."""
+    # Keep the invalid surrogate as an object value so construction succeeds with
+    # Pandas 3's default Arrow-backed string inference. The function under test
+    # must reject it before rollout metadata is serialized.
     scored = pd.DataFrame(
         {
             "sequence": ["A" * 6000],
@@ -979,7 +982,8 @@ def test_scored_records_exclude_full_sequence_from_rollout_metadata():
             "reward_nonfinite": [float("inf")],
             "reward_nan": [float("nan")],
             "reward_complex": [1 + 2j],
-        }
+        },
+        dtype=object,
     )
 
     records = _scored_records(scored)

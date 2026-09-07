@@ -1035,8 +1035,14 @@ def add_sequence_safety_rewards(
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
             _set_unavailable_reason(result, valid_positions, "SEQUENCE_SAFETY_MANIFEST_REJECTED")
             return result
-        for position, values in zip(valid_positions, mapped_rows, strict=True):
-            _set_row_values(result, position, values)
+        # Pandas 3 infers Arrow-backed string columns by default.  Replacing a
+        # complete telemetry column is reliable for every record in a mixed batch,
+        # unlike repeated positional scalar assignments into those columns.
+        mapped_df = pd.DataFrame(mapped_rows, index=valid_positions)
+        for column in mapped_df:
+            values = result[column].astype(object).to_numpy(copy=True)
+            values[valid_positions] = mapped_df[column].to_numpy()
+            result[column] = values
     except (KeyError, OSError, RuntimeError, TypeError, ValueError):
         return result
     return result
