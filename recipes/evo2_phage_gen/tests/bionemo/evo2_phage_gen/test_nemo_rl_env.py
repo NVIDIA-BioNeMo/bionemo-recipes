@@ -29,8 +29,8 @@ from bionemo.evo2_phage_gen.design_scope import HostDomain, HostEvidence
 from bionemo.evo2_phage_gen.nemo_rl_env import (
     TIMING_METRIC_MARKER_PREFIX,
     GDPOObjective,
-    _scored_records,
     _is_bounded_utf8,
+    _scored_records,
     extract_assistant_sequence,
     extract_scored_sequence,
     gdpo_objective_scores_from_scored,
