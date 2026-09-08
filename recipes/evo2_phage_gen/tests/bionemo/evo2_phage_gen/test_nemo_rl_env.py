@@ -30,6 +30,7 @@ from bionemo.evo2_phage_gen.nemo_rl_env import (
     TIMING_METRIC_MARKER_PREFIX,
     GDPOObjective,
     _scored_records,
+    _is_bounded_utf8,
     extract_assistant_sequence,
     extract_scored_sequence,
     gdpo_objective_scores_from_scored,
@@ -975,7 +976,6 @@ def test_scored_records_exclude_full_sequence_from_rollout_metadata():
             "safety_nested_payload": [{"state": "PASS"}],
             "safety_list_payload": [["PASS"]],
             "safety_unbounded_payload": ["x" * 4097],
-            "safety_invalid_unicode": ["\ud800"],
             "reward_nonfinite": [float("inf")],
             "reward_nan": [float("nan")],
             "reward_complex": [1 + 2j],
@@ -1001,6 +1001,15 @@ def test_scored_records_exclude_full_sequence_from_rollout_metadata():
         }
     ]
     json.dumps(records, allow_nan=False)
+
+
+def test_is_bounded_utf8_rejects_surrogate_characters():
+    """Surrogate characters cannot be encoded to UTF-8 and should be rejected."""
+    assert _is_bounded_utf8("\ud800") is False
+    assert _is_bounded_utf8("\udfff") is False
+    # Valid unicode should pass
+    assert _is_bounded_utf8("hello") is True
+    assert _is_bounded_utf8("🧬") is True
 
 
 def test_global_post_process_metrics_leave_task_namespace_to_nemo_rl():
