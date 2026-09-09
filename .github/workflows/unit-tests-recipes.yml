@@ -119,9 +119,13 @@ jobs:
             echo "Found 'ciflow:all' label - running all directories"
             DIRS="$ALL_DIRS"
           else
-            # Filter directories to only those that have changed files
+            # Filter directories to only those that have changed files. Changed entries are
+            # directory names truncated to depth 3 (e.g. "recipes/evo2_phage_gen/src" for a
+            # change under recipes/evo2_phage_gen), so match a recipe when a changed entry is
+            # the recipe dir itself or any path beneath it. A plain index() lookup misses
+            # deep-only changes and silently produces an empty (vacuously green) matrix.
             DIRS=$(echo "$ALL_DIRS" | jq -c --argjson changed "$CHANGED_FILES" '
-              map(select(. as $dir | $changed | index($dir) != null))
+              map(select(. as $dir | $changed | any(. == $dir or startswith($dir + "/"))))
             ')
           fi
 
