@@ -439,9 +439,7 @@ class NVEsmPreTrainedModel(EsmPreTrainedModel):
             # Already in the right shape
             extended_attention_mask = attention_mask
         else:
-            raise ValueError(
-                f"attention_mask must be 2D, 3D, or 4D, got {attention_mask.dim()}D"
-            )
+            raise ValueError(f"attention_mask must be 2D, 3D, or 4D, got {attention_mask.dim()}D")
 
         # Convert to the target dtype and device
         extended_attention_mask = extended_attention_mask.to(device=device, dtype=dtype)
