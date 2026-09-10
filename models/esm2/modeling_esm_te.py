@@ -404,6 +404,54 @@ class NVEsmPreTrainedModel(EsmPreTrainedModel):
         state_dict = super().state_dict(*args, **kwargs)
         return {k: v for k, v in state_dict.items() if not k.endswith("_extra_state") and not k.endswith(".inv_freq")}
 
+    def get_extended_attention_mask(
+        self,
+        attention_mask: torch.Tensor,
+        input_shape: tuple[int, ...],
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        """Extend attention mask to the right shape for TE attention.
+
+        Args:
+            attention_mask: Attention mask of shape [batch_size, seq_length] or [batch_size, seq_length, seq_length].
+            input_shape: Shape of the input tensor (batch_size, seq_length).
+            device: Device to place the mask on.
+            dtype: Dtype of the output mask.
+
+        Returns:
+            Extended attention mask of shape [batch_size, 1, 1, seq_length] (for padding mask)
+            or [batch_size, 1, seq_length, seq_length] (for causal/3D mask).
+        """
+        if device is None:
+            device = attention_mask.device
+        if dtype is None:
+            dtype = self.dtype if hasattr(self, "dtype") else torch.float32
+
+        # Handle different attention mask shapes
+        if attention_mask.dim() == 2:
+            # [batch_size, seq_length] -> [batch_size, 1, 1, seq_length]
+            extended_attention_mask = attention_mask[:, None, None, :]
+        elif attention_mask.dim() == 3:
+            # [batch_size, seq_length, seq_length] -> [batch_size, 1, seq_length, seq_length]
+            extended_attention_mask = attention_mask[:, None, :, :]
+        elif attention_mask.dim() == 4:
+            # Already in the right shape
+            extended_attention_mask = attention_mask
+        else:
+            raise ValueError(
+                f"attention_mask must be 2D, 3D, or 4D, got {attention_mask.dim()}D"
+            )
+
+        # Convert to the target dtype and device
+        extended_attention_mask = extended_attention_mask.to(device=device, dtype=dtype)
+
+        # Convert to the format expected by TE: True means masked, False means not masked
+        # TE expects large negative values for masked positions
+        extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(dtype).min
+
+        return extended_attention_mask
+
 
 class NVEsmModel(NVEsmPreTrainedModel):
     """The ESM Encoder-only protein language model.
