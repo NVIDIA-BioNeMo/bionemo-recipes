@@ -220,3 +220,4 @@ outputs/
 *.nsys-rep
 
 .claude/
+bionemo-recipes/recipes/esm2_minifold_te/minifold_native_ext/third_party/
