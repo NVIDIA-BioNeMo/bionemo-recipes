@@ -21,6 +21,7 @@
       "expected_output": "A portfolio-level behavior check in addition to component tests.",
       "assertions": [
         "The response checks duplicated evidence, incompatible directions, scale dominance, sparse support, and combinations that reward the wrong biological endpoint.",
+        "For GDPO or GRPO per-objective normalization, it detects near-constant reward columns where a 47-versus-1 split in a batch of 48 produces an absolute z-score near 6.8 regardless of raw effect size, and floors sigma or collapses saturated columns so they cannot dominate well-spread objectives.",
         "It evaluates reference, random or baseline, desired, and counterexample genomes at component and aggregate levels.",
         "It keeps component values and denominators visible rather than validating only the weighted sum.",
         "Tests cover gaming cases and confirm online rewards agree with final QC where promised.",
@@ -97,6 +98,47 @@
         "Where circular equivalence should hold, rotations and reverse complements preserve the expected result.",
         "Boundary, empty, invalid, missing-evidence, no-hit, and tool-failure cases cannot receive accidental positive credit.",
         "The exact installed scoring path and combined portfolio run the controls so a skipped component cannot hide behind aggregate reward."
+      ],
+      "expected_skill": "bionemo-phage-design-implement-rl-objectives",
+      "expected_script": null
+    },
+    {
+      "id": "bionemo-phage-design-implement-rl-objectives-008-partial-protein-hits",
+      "prompt": "A protein reward counts high-identity MMseqs hits, but many align only a short fragment and duplicate ORFs can hit the same family. The model is still learning the basic gene complement. Improve the online reward and final QC without adding a novelty objective.",
+      "expected_output": "Coverage-aware, duplicate-safe protein evidence with aligned online and hard-QC semantics.",
+      "assertions": [
+        "The scorer retains alignment, query, and target lengths plus native query/target coverage; gap-containing alignment-column counts are not substituted for residue coverage, and identity alone is not gene presence.",
+        "Credible partial matches earn graded progress toward the approved completeness target without requiring a complete gene set first; intact-gene hard gates remain separate.",
+        "Deletion and truncation controls test the learning progression. Base-shuffled controls check accidental protein-match credit; gene-order shuffles preserve protein content and test order separately. Neither dictates a universal positive floor.",
+        "Distinct-function counts use unique supported families, while repeated hits cannot substitute for missing functions. No novelty cutoff is added to this conservation task.",
+        "Missing coverage evidence fails closed rather than falling back to raw hit counts or alignment-column approximations.",
+        "Focused tests include full-length, truncated, duplicate-family, missing-evidence, and overlapping or embedded-gene cases and compare online scoring with final QC."
+      ],
+      "expected_skill": "bionemo-phage-design-implement-rl-objectives",
+      "expected_script": null
+    },
+    {
+      "id": "bionemo-phage-design-implement-rl-objectives-010-novelty-scope",
+      "prompt": "Compare two approved objective plans: one preserves a related phage's functional proteins without seeking divergence; the other reproduces the PhiX paper's AAI novelty criterion. Explain what should differ in implementation and controls.",
+      "expected_output": "General protein evidence stays reusable; the PhiX AAI definition and novelty threshold apply only to the reproduction task.",
+      "assertions": [
+        "Conservation, database novelty, and within-batch diversity are distinct goals; the conservation plan does not inherit the PhiX 95% cutoff or a low-identity preference.",
+        "For the PhiX reproduction, the response follows the linked case-specific reference: average each called ORF's lowest-E-value hit against individual PHROGs proteins, not consensus/profile identities or one hit per family.",
+        "The separate AAI asset is prepared with --prepare-phrogs-member-database and selected by mmseqs_db_aai_database.",
+        "Controls distinguish biological plausibility from novelty: high-AAI viable controls may fail the optional novelty gate, and published low-AAI controls check its opposite side."
+      ],
+      "expected_skill": "bionemo-phage-design-implement-rl-objectives",
+      "expected_script": null
+    },
+    {
+      "id": "bionemo-phage-design-implement-rl-objectives-009-independent-measurement",
+      "prompt": "A generated genome is one nucleotide below the final length gate but otherwise tool-safe. Arc currently removes it before ORF calling and fills its protein and synteny measurements with zero. Fix the online behavior without weakening final acceptance.",
+      "expected_output": "Independent biological measurements plus a separate failed length gate.",
+      "assertions": [
+        "A tool-safe short genome still receives ORF, protein, and architecture measurements rather than fabricated zeroes.",
+        "The graded length reward uses four ordered zero/full/full/zero points, independently of the min/max interval for binary final length acceptance.",
+        "Final acceptance still rejects the genome outside the configured hard length interval.",
+        "Empty, malformed, or tool-failed genomes remain isolated and receive explicit zero credit where measurement is impossible."
       ],
       "expected_skill": "bionemo-phage-design-implement-rl-objectives",
       "expected_script": null

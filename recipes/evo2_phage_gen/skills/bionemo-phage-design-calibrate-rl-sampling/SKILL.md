@@ -1,36 +1,42 @@
 ---
 name: bionemo-phage-design-calibrate-rl-sampling
-description: Use after selecting an Evo 2 phage SFT checkpoint and defining RL objectives to calibrate prompt serialization, temperature, prefix-length distribution, and fixed validation sampling.
+description: Use after selecting an Evo 2 phage SFT checkpoint and defining RL objectives to calibrate prompt format, sampling settings, and train/validation prompt mixtures.
 metadata:
   author: NVIDIA <bionemofeedback@nvidia.com>
 ---
 
 # Calibrate Phage RL Sampling
 
-Work inside the recipe and result roots selected by the controller. Calibrate the selected SFT checkpoint rather than copying paper or earlier-run settings.
+Use the selected SFT checkpoint's actual serialization and the project's scientific endpoint. For a faithful rerun, carry the user's reviewed sampling selection forward; fresh calibration does not override it. For a new selection, compare paired-seed samples across plausible settings and choose a robust quality/diversity region rather than the noisiest maximum.
 
-Reconstruct the actual SFT prompt serialization and tokenization, including conditioning, orientation, wrappers, BOS/EOS, padding/masking, and continuation boundary. Use only cues the SFT model saw.
+The [PhiX example README](../../examples/README.md) describes commands, the review stop, selection schema, and resume markers. An explicit `--sampling-selection` is a reviewed override, not the outcome of fresh calibration. If selection is delegated, inspect `calibration/scoring/selection-evidence.csv` and neighboring score/novelty evidence, write `calibration/sampling-selection.yaml`, and continue. No further acknowledgment is needed within the delegated scope.
 
-Sweep a reasonable range of temperatures and prefix lengths with paired seeds and enough samples to compare uncertainty. Materialize the selected top-k/top-p, completion length, and prompt mixture in the commands; when both filters are nonzero, Evo 2 applies temperature, then top-k, then top-p. Treat every prompt base as fixed rather than designed: consume the objective plan's exclusions for genes or regions intended to change and reject circular prompts—including origin-wrapping intervals—that overlap any intended-to-change bases. If neutral anchors cannot support the bank, revisit the prompt strategy.
+## Construct prompts
 
-Report prompt bases and fraction of the genome fixed. Start with the shortest workable prompt consistent with the selected SFT serialization and measured generation quality; do not scale prompt length linearly with genome size by default, because even a sub-percent prompt can be substantial on a small genome. Retain a longer prompt only with a model- and design-specific rationale supported by calibration evidence. Distribute eligible starts around circular genomes, shuffle or interleave strata, and make each global rollout batch representative rather than cycling through fixed cohorts. When step metrics oscillate, stratify by prompt position, length, and composition before attributing the pattern to the policy.
+Reconstruct conditioning, orientation, wrappers, tokenization, BOS/EOS, padding, and the continuation boundary from SFT. Use only cues the model saw.
 
-Score raw and cluster-deduplicated hard-QC yield, target/lifecycle evidence, complete-genome integrity, copying, diversity, and every enabled objective. A successful wrapper is insufficient: require every configured external measurement used for selection to be available, distinguish a biological no-hit from scorer failure, and diagnose unexplained missing or fixed-zero components rather than dropping them. Use positive and failure controls to confirm each score is measurable.
+Prompt bases are fixed, not designed. Use the objective plan's exclusions, including circular intervals that wrap the origin. Start with the shortest workable prompt; report its bases and genome fraction rather than scaling length by genome size. Longer prompts need evidence that they help. If a preserved required ORF is never reached from neutral anchors, a minimal start-seeded stratum can be tested alongside an unseeded stratum; record what it fixes.
 
-Choose a robust quality-diversity plateau rather than a noisy maximum. Prefer temperature 1.0 when it is practically equivalent, and retain multiple prompt strata only when they improve the frontier. Packed dynamic prefill can mix arbitrary prompt lengths in one microbatch, so the number of length strata need not divide the request batch or GPU count; interleave a near-balanced mixture instead.
+For confirmed circular or headful/pac genomes, compare alternate rotations and overlap-aware CDS occupancy, including annotated regulatory features. Summed CDS occupancy can exceed 100% for overlapping genes; missing annotations do not establish neutrality. For fixed-end dsDNA, reconstruct the biological termini and packaged/deposited form first, then compare the forward and reverse-complement terminal prompts rather than internal rotations.
 
-Keep calibration samples separate from the fixed RL-validation bank and final rollout. Record prompt construction, seeds, sampling settings, sample counts, score summaries, uncertainty, chosen mixture, and rationale in the stage summary and `RUNLOG.md`.
+Interleave anchor/orientation/length strata across training batches. Keep a fixed, independent, comparably stratified validation bank. Native packed generation handles heterogeneous lengths in one ordered call; length-stratum count need not divide the GPU or batch count. Stratify sawtooth metrics by prompt cohort before calling them learning.
 
-For the realized PhiX workflow, read the
-[example README](../../examples/README.md) before planning or rerunning it. Treat that document as
-the source of truth for the current review stop, evidence paths, selection schema and handoff,
-completion markers, and resume procedure. When the user delegates selection, make the
-evidence-based choice described there and record its rationale; use the bundled historical choice
-only when the user explicitly selects it.
+## Check sampling and termination
 
-The example shell script is a reference implementation, not a mandatory launcher. On a different
-GPU or scheduler environment, inspect the available hardware and adapt topology, batch and worker
-settings, or the launch method itself while preserving whole-genome context, effective batch,
-sampling semantics, validation independence, and the durable selection record. Do not alter an
-active run's sampling semantics in place; use a new result root and SFT-anchored RL attempt for a
-material change, retaining the earlier run as evidence.
+Evo 2 applies temperature, then top-k, then shifted top-p. After top-k renormalization, EOD survives nucleus filtering according to cumulative mass **strictly before EOD**. Check the deployed chain at authentic endpoints, not just raw top-k ranks.
+
+The realized PhiX mixture uses temperature 1, top-k 5, top-p 1.0: nucleus at .999 removed EOD at two authentic anchor endpoints. This restores support, not correct placement, and is not a universal policy for other genomes. Audit authentic-EOD frequency and biological length placement separately across all required strata; both can fall while content reward rises.
+
+Generation budget counts assistant tokens; biological length includes prompt bases and excludes control tokens/EOD. PhiX defaults to 6,000 generated tokens and 6,144 context, allowing 6,016/6,024 biological bases for 16/24-base prompts, beyond the 5,800 reward zero. The independent hard length screen is 5,306–5,730 nt; full credit is 5,359–5,550. See the [README's length evidence](../../examples/README.md#current-phix174-gdpo-score-definitions) for viability versus stability and the shaping choices. Both PhiX RL configs enable the missing-EOD whole-reward gate, retaining no-EOD rows in the loss with zero scalar/vector rewards. A wider taper gives shaping credit, not hard acceptance; a flat-zero tail supplies no graded distance signal. Material changes use a fresh result root, leaving existing attempts comparable under their original bounds.
+
+Retain direct authentic-EOD bins: below lower zero, lower taper, full credit, upper taper, and above upper zero. Count caps and non-EOD short outputs separately. Whole-sequence likelihood depends on linear origin, so mixed-origin designs need an origin-normalized method before global likelihood ranking.
+
+The paired calibration sweep's `TARGET_LENGTH=6000` is a biological total, not RL's generated-token budget; it subtracts prompt bases. Both calibration and deployment caps must lie beyond the scoring zero. Calibration does not replace the deployed full-shape pilot.
+
+## Score and select
+
+Use the same reward definitions, safety policy, asset manifest, host domain, and confirmed host evidence as online RL. Positive and failure controls distinguish biological no-hit from unavailable measurement. Missing configuration, failed tools, and unexplained NOT_RUN need diagnosis; documented inapplicability remains INDETERMINATE and hard-QC-ineligible.
+
+Compare raw and cluster-deduplicated hard-QC yield, each objective, copying, diversity, and uncertainty. For rotation-invariant metrics, run reference rotations through the scoring environment. Per-row cluster-representative flags are set-relative, so compare their representative count rather than requiring identical flags.
+
+Keep calibration, fixed validation, and final rollout samples separate. Record chosen prompts, seeds, settings, counts, results, and rationale in the runlog. Material sampling changes start a new SFT-anchored attempt; execution-only adaptations can reuse the scientific selection.

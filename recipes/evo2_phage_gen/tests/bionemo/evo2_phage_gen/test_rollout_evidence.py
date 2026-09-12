@@ -201,14 +201,14 @@ def test_post_qc_clustering_pins_contract(tmp_path):
     assert report["mmseqs"] == {
         "version": "fake-mmseqs 1.0",
         "min_sequence_identity": 0.99,
-        "coverage": 0.8,
+        "coverage": 0.95,
         "coverage_mode": 0,
         "cluster_mode": 0,
         "threads": 7,
     }
     cluster_command = next(command for command in report["commands"] if command[1] == "cluster")
     assert cluster_command[cluster_command.index("--min-seq-id") + 1] == "0.99"
-    assert cluster_command[cluster_command.index("-c") + 1] == "0.8"
+    assert cluster_command[cluster_command.index("-c") + 1] == "0.95"
 
 
 def test_arc_summary_omits_internal_clustering(tmp_path):
@@ -304,7 +304,13 @@ def test_final_report_reconciles_raw_and_representative_denominators(tmp_path):
     memberships = tmp_path / "memberships.csv"
     memberships.write_text("representative_id,member_id\na,a\na,c\n")
     selection = tmp_path / "sampling-selection.yaml"
-    selection.write_text("temperature: 1.0\nprompt_lengths: [16, 24]\n")
+    selection.write_text(
+        "temperature: 1.0\n"
+        "prompt_lengths: [16, 24]\n"
+        "prompt_anchors:\n"
+        "  - {name: after_f, start_1_based: 2285}\n"
+        "  - {name: after_h, start_1_based: 3918}\n"
+    )
 
     finalize_rollout_report(
         raw,
@@ -325,6 +331,7 @@ def test_final_report_reconciles_raw_and_representative_denominators(tmp_path):
     )
 
     payload = json.loads((tmp_path / "final-designs.json").read_text())
+    assert payload["schema_version"] == 2
     assert payload["workflow_order"] == [
         "raw_generation",
         "exact_circular_reverse_complement_deduplication",
@@ -357,7 +364,16 @@ def test_final_report_reconciles_raw_and_representative_denominators(tmp_path):
     assert excluded["representative_safety_state"] == "NOT_SCREENED_PRE_SAFETY_QC"
     assert not excluded["target_profile_pass"]
     assert not excluded["hard_qc_pass"]
-    assert payload["sampling_selection"] == {"temperature": 1.0, "prompt_lengths": [16, 24]}
+    assert payload["sampling_selection"] == {
+        "temperature": 1.0,
+        "prompt_lengths": [16, 24],
+        "prompt_anchors": [
+            {"name": "after_f", "start_1_based": 2285},
+            {"name": "after_h", "start_1_based": 3918},
+        ],
+    }
+    assert payload["ranking"]["applied_to_accepted_candidate_order"] is False
+    assert payload["ranking"]["comparable_across_circular_prompt_origins"] is False
     assert payload["sequence_safety_provenance"]["tools"] == {"mmseqs": {"version": "test-mmseqs"}}
     assert payload["sequence_safety_provenance"]["databases"] == {"phrogs": {"version": "test-phrogs"}}
     assert (tmp_path / "accepted.fasta").read_text() == ">a\nAACG\n"
