@@ -9,10 +9,11 @@ reinforcement learning (RL) stage, which optimizes generation toward user-define
 design criteria rather than relying only on post-generation filtering.
 
 The included PhiX174 example follows Samuel King's recommended set of filters (1–6, 8, and 9) from
-[Figure 2H](https://www.science.org/doi/10.1126/science.aec2657#F2). These become RL objectives with
-partial credit for candidates that approach each threshold. See the
+[Figure 2H](https://www.science.org/doi/10.1126/science.aec2657#F2). Their measurable constraints are
+represented as separate graded or categorical RL objectives; reward full-credit regions, final
+per-genome gates, and set-level diversity selection are distinct. See the
 [PhiX174 GDPO score definitions](examples/README.md#current-phix174-gdpo-score-definitions) for the
-objective definitions and partial-credit rules. The publication reported 15 filter passers among
+objective definitions and hard-filter relationships. The publication reported 15 filter passers among
 110,000 generated sequences. An earlier completed end-to-end GDPO run produced 610 target-profile
 passes among 1,000 designs, while the latest run retained 511 post-QC accepted representatives among
 1,000 designs. These results are descriptive rather than a controlled enrichment comparison because
@@ -35,15 +36,17 @@ See the [example README](examples/README.md) for additional launch options and o
 
 The end-to-end run takes approximately 4 days on a server with 8 H100 GPUs, and uses 1.5TB of storage.
 
-Run the following from `recipes/evo2_phage_gen` to reproduce the `7b-base` end-to-end configuration
-summarized above:
+Run the following from `recipes/evo2_phage_gen` for the current `7b-base` end-to-end configuration.
+All default prompts start at reference coordinate 1; see the
+[prompt-origin rationale](examples/README.md#prompt-origin) for the related-assembly and SFT evidence.
+The historical results above used earlier settings.
 
 ```bash
 ./.ci_build.sh
 ./examples/phix174_8xh100.sh \
   --model-variant 7b-base  \
   --sampling-selection "examples/default-sampling-selection.yaml" \
-  --result-root "$PWD/results/phix174-8xh100"
+  --result-root "$PWD/results/phix174-8xh100-origin"
 ```
 
 Like the Evo 2 recipe, `.ci_build.sh` creates an editable Python 3.12 virtual
@@ -56,7 +59,8 @@ running individual recipe commands by hand.
 
 Use tmux or a scheduler for long runs. `NUM_GPUS` defaults to 8, `NUM_CPUS` to `nproc`, and
 `SFT_TENSOR_PARALLEL_SIZE` may adapt a measured smaller topology.
-The [8×H100 example](examples/README.md) documents dry runs, preparation-only mode, stage markers,
+The [8×H100 example](examples/README.md) documents dry runs, an opt-in
+[quick live E2E check](examples/README.md#quick-live-end-to-end-check), preparation-only mode, stage markers,
 sampling overrides, outputs, and all RL objectives.
 
 ## Run with an agent
@@ -79,3 +83,9 @@ Use $bionemo-phage-generation to adapt the PhiX174 example for this GB300 node, 
 Thanks to Samuel King, Jessica Sacher, Jan Zheng, Avery Noonan, Michael Poon, and colleagues at
 Tabula Bio, and to Eric Bastien and Nick Conley at Locus Biosciences, for discussions, guidance, and
 feedback that shaped the recipe and its safety controls.
+
+The protein objectives now distinguish `core_gene_ordered_conservation` (the
+existing core/function/order score) from `accessory_gene_diversification` (K/X
+novelty and accessory copy budget). See the [accessory score definition](configs/accessory_genes.md)
+for the full score surface, evidence exclusions, and historical Arc comparison.
+The accessory metric is an RL reward and diagnostic only; it adds no final filter.
