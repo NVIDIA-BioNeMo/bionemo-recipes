@@ -43,7 +43,6 @@ The use cases of BioNeMo Recipes include:
 | `recipes/`<br>`codonfm_ptl_te`                                                                   | PyTorch Lightning recipe for [CodonFM](https://research.nvidia.com/labs/dbr/assets/data/manuscripts/nv-codonfm-preprint.pdf) | FSDP         | ✅   | 🚧                | ✅  | 🚧        | 🚧                  | 🚧                  | ❌  |
 | `recipes/`<br>`geneformer_native_te_mfsdp_fp8`                                                   | Recipe for geneformer HF model                                                                                               | mFSDP        | ✅   | ✅                | 🚧  | 🚧        | 🚧                  | 🚧                  | ❌  |
 | `recipes/`<br>`vit`                                                                              | Recipe for vision transformer                                                                                                | mFSDP        | ✅   | 🚧                | ❌  | ❌        | ❌                  | ❌                  | ❌  |
-| `recipes/`<br>`nemotron-stitch`                                                                  | Soft-token multimodal post-training with NeMo AutoModel, NeMo RL, and vLLM                                                   | FSDP2        | ✅   | ❌                | ✅  | ❌        | ❌                  | ❌                  | ❌  |
 
 ✅: Supported <br/>
 🚧: Under development, will be supported soon <br/>
