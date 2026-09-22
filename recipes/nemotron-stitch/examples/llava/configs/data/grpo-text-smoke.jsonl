@@ -1,0 +1,4 @@
+{"sample_id":"text-signal-0","question":"Reply with any words from this reference: a red circle sits left of a blue square; describe the scene briefly.","ground_truth":"a red circle sits left of a blue square describe the scene briefly"}
+{"sample_id":"text-signal-1","question":"Reply with any words from this reference: the list contains three apples and two pears; answer exactly.","ground_truth":"the list contains three apples and two pears answer exactly"}
+{"sample_id":"text-signal-2","question":"Reply with any words from this reference: the train arrives at noon and departs at dusk; keep it short.","ground_truth":"the train arrives at noon and departs at dusk keep it short"}
+{"sample_id":"text-signal-3","question":"Reply with any words from this reference: gravity pulls objects toward the earth; respond plainly.","ground_truth":"gravity pulls objects toward the earth respond plainly"}
