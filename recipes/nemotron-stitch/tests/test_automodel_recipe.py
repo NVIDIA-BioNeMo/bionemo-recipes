@@ -322,6 +322,23 @@ def test_setup_loads_an_initial_sidecar_without_a_provenance_lock(tmp_path):
     recipe.setup()
 
 
+def test_sidecar_stage2_loads_the_stage1_bridge(tmp_path):
+    reference = _model(meta_projector=False)
+    save_projector_artifact(reference, tmp_path / "stage1", provenance={"origin": "unit-test"}, stage=1)
+    recipe = _Recipe(
+        _Cfg(
+            model=_Cfg(mm_training_stage=2),
+            projector=_Cfg(stage1_artifact=str(tmp_path / "stage1"), expected_provenance={"origin": "unit-test"}),
+        )
+    )
+    recipe.model_parts = [_model()]
+
+    recipe.setup()
+
+    for name, value in recipe.model_parts[0].mm_projector.state_dict().items():
+        assert torch.equal(value, reference.mm_projector.state_dict()[name]), name
+
+
 def test_sidecar_export_writes_the_package_manifest(tmp_path):
     artifact_dir = tmp_path / "export"
     recipe = _Recipe(_cfg(artifact_dir=str(artifact_dir), provenance={"origin": "unit-test"}))

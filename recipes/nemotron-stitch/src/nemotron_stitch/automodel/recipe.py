@@ -293,18 +293,27 @@ class ProjectorRecipeMixin:
         # restored the projector through the tracked wrapper.
         resumed = self.projector_sidecar_state.bind(model.mm_projector)
         projector_cfg = self.cfg.get("projector", {})
-        initial_artifact = projector_cfg.get("initial_artifact")
         if resumed:
             logging.info("Restored sidecar projector state from the native checkpoint")
-        elif initial_artifact:
+        else:
+            checkpoint = self.cfg.get("checkpoint", {})
+            source = resolve_initialization_artifact(
+                checkpoint_dir=checkpoint.get("checkpoint_dir"),
+                restore_from=checkpoint.get("restore_from"),
+                initial_artifact=projector_cfg.get("initial_artifact"),
+                stage1_artifact=projector_cfg.get("stage1_artifact"),
+                stage=int(self.cfg.model.get("mm_training_stage", 1)),
+            )
+            if source is None:
+                return result
             expected = projector_cfg.get("expected_provenance")
             manifest = load_projector_artifact(
                 model,
-                Path(initial_artifact),
+                source,
                 expected=plain_mapping(expected) if expected else None,
                 extra_patterns=tuple(projector_cfg.get("trainability_extra_patterns", ())),
             )
-            logging.info("Loaded initial projector sidecar from %s (stage %s)", initial_artifact, manifest.stage)
+            logging.info("Loaded initial projector sidecar from %s (stage %s)", source, manifest.stage)
         return result
 
     def run_train_validation_loop(self):
