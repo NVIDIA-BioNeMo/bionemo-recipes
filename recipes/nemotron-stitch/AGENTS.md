@@ -65,7 +65,7 @@ away from being deletable — and because in six months nobody will remember whi
 awkward-looking function is load-bearing and which is routing around a bug that
 has since been fixed.
 
-The tracker is [`docs/upstream-gaps.md`](docs/upstream-gaps.md).
+The tracker is `docs/upstream-gaps.md`.
 Its first table is the modality-integration upstream roadmap; a separate table
 keeps adjacent framework findings from being mistaken for package scope. Its
 `U-` identifiers are stable and are cited by workaround comments.

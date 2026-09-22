@@ -293,8 +293,7 @@ docker run --rm \
 
 See [`AGENTS.md`](AGENTS.md) for repository conventions, the full worker-venv
 test matrix, and the rule for documenting framework workarounds. Current
-upstream limitations are tracked in
-[`docs/upstream-gaps.md`](docs/upstream-gaps.md).
+upstream limitations are tracked in `docs/upstream-gaps.md`.
 
 ## License
 

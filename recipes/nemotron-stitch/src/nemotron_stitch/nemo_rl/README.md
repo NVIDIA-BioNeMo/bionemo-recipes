@@ -21,7 +21,7 @@ Framework imports are lazy; the base wheel never imports NeMo RL.
 
 ## Upstream gaps
 
-Subset of [`docs/upstream-gaps.md`](../../../docs/upstream-gaps.md)
+Subset of `docs/upstream-gaps.md`
 (the single source of truth). Of this subpackage's modality-roadmap items,
 U-4, U-5, and U-8 are adopted upstream; U-18 remains open, and U-9, U-20, and
 U-21 are recorded there as adjacent work. U-19 disappeared with the U-4 shim.

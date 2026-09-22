@@ -213,7 +213,7 @@ your names and base classes.
 
 ## Step 2: write the training configs
 
-Use [`configs/`](configs/) as the reference. Alignment and SFT are plain
+Use `configs/` as the reference. Alignment and SFT are plain
 AutoModel configs. GRPO is a NeMo RL config composed with a per-model contract.
 
 ### Alignment and SFT

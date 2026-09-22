@@ -28,6 +28,6 @@ projector artifact.
 
 ## Upstream gaps
 
-Subset of [`docs/upstream-gaps.md`](../../../docs/upstream-gaps.md)
+Subset of `docs/upstream-gaps.md`
 (the single source of truth). This subpackage's modality-roadmap items are U-2,
 U-7, and U-10; U-11 and U-13 through U-17 are recorded there as adjacent work.

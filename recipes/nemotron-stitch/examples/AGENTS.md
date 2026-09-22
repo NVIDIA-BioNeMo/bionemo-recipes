@@ -10,7 +10,7 @@ such as:
 - `nemotron-rna/`
 - `nemotron-kermt/`
 
-Use [`llava/`](llava/) as the reference for their scope. Each demo should contain only the domain code
+Use `llava/` as the reference for their scope. Each demo should contain only the domain code
 and configuration needed to understand and reproduce a competitive recipe. It
 should teach a reader how to build their own model, not grow into a reusable
 framework of its own.
@@ -98,7 +98,7 @@ The escalation must include:
 3. the behavior the demo needs and the domain-neutral seam Stitch should expose;
 4. what temporary demo code would otherwise have been required; and
 5. a corresponding entry in
-   [`../docs/upstream-gaps.md`](../docs/upstream-gaps.md),
+   `../docs/upstream-gaps.md`,
    following that repository's instructions.
 
 Do not resume the blocked portion by hiding the workaround in a helper. Resume

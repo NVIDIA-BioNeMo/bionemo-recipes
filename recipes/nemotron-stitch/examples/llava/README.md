@@ -276,7 +276,7 @@ globally tighter bins.
 > fp32 master weights and the package's sidecar policy is qualified for
 > exactly one rank, so a 30B one-rank policy needs ≥141 GB HBM (measured
 > OOM at ~77 GiB during init where a BF16 load peaks at 58.8 GiB; see
-> [`docs/upstream-gaps.md`](../../docs/upstream-gaps.md)). Multi-rank policy (EP/TP) is the
+> `docs/upstream-gaps.md`). Multi-rank policy (EP/TP) is the
 > module-ownership path owned by consumer workers (genome-research), not the
 > example.
 

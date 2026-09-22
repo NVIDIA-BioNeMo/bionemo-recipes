@@ -41,6 +41,6 @@ imports without vLLM installed.
 
 ## Upstream gaps
 
-Subset of [`docs/upstream-gaps.md`](../../../docs/upstream-gaps.md)
+Subset of `docs/upstream-gaps.md`
 (the single source of truth). U-22 through U-24 are recorded there as intended
 model/processor extension code, not upstream asks.
