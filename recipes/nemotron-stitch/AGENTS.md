@@ -115,6 +115,20 @@ it is just our code, and it does not need the comment.
 - **Say what you did not do.** If a phase is partly blocked, finish the rest and
   state plainly what was left and why.
 
+## Upstream synchronization
+
+`NVIDIA-dev/nemotron-stitch` is the canonical home for Stitch development.
+Develop package and example changes there first, then import a pinned upstream
+commit into this recipe as a focused snapshot update. Keep BioNeMo-only CI,
+image, and discovery changes in this repository.
+
+For a BioNeMo fix that belongs upstream, apply the recipe-scoped commit to a
+fresh Stitch checkout with a prefix strip, resolve any intentionally divergent
+documentation there, and submit a normal Stitch PR. Do not use a bidirectional
+subtree: the repositories deliberately have independent history and release
+cadence. Record the imported upstream commit in the BioNeMo PR description so
+the next snapshot has an unambiguous base.
+
 ## Testing
 
 Run the suite inside the fully provisioned example image, currently
