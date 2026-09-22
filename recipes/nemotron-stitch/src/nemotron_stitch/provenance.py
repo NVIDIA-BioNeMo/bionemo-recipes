@@ -26,7 +26,7 @@ from typing import Any, BinaryIO
 
 def canonical_json(value: Any) -> str:
     """Serialize JSON deterministically for hashes and safetensors metadata."""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def sha256_stream(stream: BinaryIO, chunk_size: int = 8 * 1024 * 1024) -> str:

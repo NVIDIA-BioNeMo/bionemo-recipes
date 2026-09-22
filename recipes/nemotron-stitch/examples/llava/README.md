@@ -65,8 +65,8 @@ committed to this repository.
 ## Setup
 
 The environment (unmodified NeMo RL main, nesting AutoModel r0.6.0, vLLM
-`0.25.1`, torch `2.11.0+cu130`, transformers `5.12.1`) is built as a
-container from the repository root:
+`0.25.1`, torch `2.11.0+cu130`, transformers `5.12.1`) is built from the
+`recipes/nemotron-stitch` directory:
 
 ```bash
 docker build -f examples/llava/Dockerfile -t llava-example .

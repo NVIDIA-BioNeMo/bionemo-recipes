@@ -50,7 +50,7 @@ def ragged_batch() -> RaggedBatch:
 
     Row 0: three soft tokens at non-contiguous positions 2, 5, 9.
     Row 1: no soft tokens.
-    Row 2: two soft tokens at contiguous positions 15, 16 (flat indices).
+    Row 2: two soft tokens at contiguous positions 3, 4 (flat indices 27, 28).
     """
     batch, sequence, width = 3, 12, 8
     generator = torch.Generator().manual_seed(SEED)

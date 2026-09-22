@@ -31,6 +31,12 @@ def test_canonical_json_is_deterministic() -> None:
     assert canonical_json({"b": 1, "a": [2, 3]}) == '{"a":[2,3],"b":1}'
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_canonical_json_rejects_non_finite_values(value) -> None:
+    with pytest.raises(ValueError, match="Out of range float values"):
+        canonical_json({"value": value})
+
+
 def test_sha256_json_is_order_independent() -> None:
     assert sha256_json({"a": 1, "b": 2}) == sha256_json({"b": 2, "a": 1})
 

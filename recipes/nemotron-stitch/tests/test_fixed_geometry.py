@@ -122,6 +122,19 @@ def test_preparation_does_not_require_repository_metadata(tmp_path):
     assert result["records"] == 3
 
 
+def test_preparation_rejects_encoder_dtype_mismatching_the_cache_contract(tmp_path):
+    with pytest.raises(ValueError, match="encoder produced dtype float16.*records 'float32'"):
+        prepare_features(
+            {"source": [{"id": "row", "value": 0}]},
+            lambda _value: np.ones((1, 3), dtype=np.float16),
+            _normalize,
+            partitions=(Partition("align", "train", "source", 0, 1),),
+            cache_root=tmp_path / "cache",
+            manifest_path=tmp_path / "manifest.jsonl",
+            max_scan_rows=1,
+        )
+
+
 def test_preparation_caches_variable_length_feature_rows(tmp_path):
     result = prepare_features(
         {"source": ({"id": f"row-{i}", "value": i} for i in range(3))},

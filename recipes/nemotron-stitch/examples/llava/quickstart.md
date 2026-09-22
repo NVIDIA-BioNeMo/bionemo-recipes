@@ -207,9 +207,9 @@ To add another base model:
    the stage config's `defaults` list.
 
 The `NANO_4B` and `LIGHTNING_30B` paths in the example provide a concrete pair
-to compare. The package supplies `build_host_cls`; the application callbacks
-`register_models` and `register_vllm` only bind that shared implementation to
-your names and base classes.
+to compare. The package supplies `build_multimodal_host` and `build_mm_plugin`;
+the application's `build_host_cls`, `register_models`, and `register_vllm` only
+bind those shared implementations to your names and base classes.
 
 ## Step 2: write the training configs
 

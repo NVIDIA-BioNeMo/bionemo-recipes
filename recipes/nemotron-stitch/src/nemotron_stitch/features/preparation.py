@@ -153,6 +153,8 @@ def prepare_features(
             encoded = np.asarray(encode(encoder_input))
             if encoded.ndim == 0:
                 raise ValueError("encoder must produce a non-scalar feature array")
+            if str(encoded.dtype) != dtype:
+                raise ValueError(f"encoder produced dtype {encoded.dtype}, but the cache contract records {dtype!r}")
             max_context_units = max(max_context_units, encoded.shape[0])
             record["feature_digest"] = hashlib.sha256(encoded.tobytes()).hexdigest()
             records.append(record)
