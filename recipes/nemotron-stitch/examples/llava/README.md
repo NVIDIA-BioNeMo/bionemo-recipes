@@ -84,8 +84,8 @@ docker run -d --name llava-example --ipc=host \
 ```
 
 The base is a public mirror of NVIDIA's NeMo RL nightly at `b03da0f4`, pinned
-in the Dockerfile to the multi-platform digest
-`sha256:a92eb4efb488be6814ea7236b9b813415b8e7a814e1146389c7b15ad2d682f2a`.
+in the Dockerfile to the AMD64 digest
+`sha256:08fd971c29f8e76f0d589bc7195104231594e859707fda6fac82388770732140`.
 The public mirror is currently AMD64, matching BioNeMo CI runners. The example
 uses the base's prebuilt
 AutoModel worker environment for preparation, alignment/SFT, and the GRPO
@@ -363,7 +363,6 @@ instantiation. The `outputs/` mount is host-visible, so dropping an image
 there is the easy path into the container. The SFT/GRPO slices were
 CLEVR-Math, so counting-style questions (answered "The answer is N") show
 the trained behavior best.
-minimal engine gate (random embeddings, no trained weights).
 
 ## Tests
 

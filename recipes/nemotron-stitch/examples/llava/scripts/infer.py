@@ -104,14 +104,15 @@ def merge_lora(base: Path, adapter_dir: Path, out: Path) -> None:
         raise ValueError(f"unsupported adapter type: {config.get('peft_type')!r}")
     scale = float(config["lora_alpha"]) / float(config["r"])
 
-    # Adapter keys are PEFT's: base_model.model.<base weight FQN>.lora_{A,B}.weight.
+    # Adapter keys are PEFT's: base_model.model.<module FQN>.lora_{A,B}.weight;
+    # the merged base tensor is <module FQN>.weight.
     pairs: dict[str, dict[str, torch.Tensor]] = {}
     with safe_open(str(adapter_dir / "adapter_model.safetensors"), framework="pt") as handle:
         for key in handle.keys():
-            fqn, dot, kind = key.removeprefix("base_model.model.").rpartition(".lora_")
+            module, dot, kind = key.removeprefix("base_model.model.").rpartition(".lora_")
             if not dot or kind not in ("A.weight", "B.weight"):
                 raise ValueError(f"unexpected adapter tensor name: {key!r}")
-            pairs.setdefault(fqn, {})[kind[0]] = handle.get_tensor(key)
+            pairs.setdefault(f"{module}.weight", {})[kind[0]] = handle.get_tensor(key)
 
     tensors: dict[str, torch.Tensor] = {}
     shards = sorted(base.glob("*.safetensors"))
@@ -125,6 +126,8 @@ def merge_lora(base: Path, adapter_dir: Path, out: Path) -> None:
     for fqn, pair in sorted(pairs.items()):
         if fqn not in tensors:
             raise KeyError(f"adapter target {fqn!r} is not a base weight")
+        if set(pair) != {"A", "B"}:
+            raise ValueError(f"incomplete LoRA pair for {fqn!r}: found {sorted(pair)}")
         base_weight = tensors[fqn]
         delta = pair["B"].to(base_weight.dtype) @ pair["A"].to(base_weight.dtype)
         tensors[fqn] = (base_weight + delta * scale).contiguous()
@@ -161,48 +164,51 @@ def main() -> None:
     base = Path(args.base)
     adapter_dir = find_adapter(Path(args.adapter))
     merged = Path(tempfile.mkdtemp(prefix="llava-example-merged-"))
-    merge_lora(base, adapter_dir, merged)
+    try:
+        merge_lora(base, adapter_dir, merged)
 
-    import numpy as np
-    from transformers import AutoTokenizer
+        import numpy as np
+        from transformers import AutoTokenizer
 
-    from nemotron_stitch.nemo_rl.data import prepend_bos_if_needed
-    from nemotron_stitch.nemo_rl.transport import project_features
+        from nemotron_stitch.nemo_rl.data import prepend_bos_if_needed
+        from nemotron_stitch.nemo_rl.transport import project_features
 
-    encode = build_encoder("cpu")
-    features = torch.from_numpy(np.asarray(encode(load_input(args.input))))
-    projected = project_features(features, args.projector, PROJECTOR_NAME)
+        encode = build_encoder("cpu")
+        features = torch.from_numpy(np.asarray(encode(load_input(args.input))))
+        projected = project_features(features, args.projector, PROJECTOR_NAME)
 
-    tokenizer = AutoTokenizer.from_pretrained(str(base), trust_remote_code=True)
-    # Byte-identical to the GRPO rollout prompt (encoder_rl_processor).
-    prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": f"<{PROJECTOR_NAME}>\n" + args.question}],
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
-    prompt = prepend_bos_if_needed(prompt, tokenizer, add_bos=True)
+        tokenizer = AutoTokenizer.from_pretrained(str(base), trust_remote_code=True)
+        # Byte-identical to the GRPO rollout prompt (encoder_rl_processor).
+        prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": f"<{PROJECTOR_NAME}>\n" + args.question}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        prompt = prepend_bos_if_needed(prompt, tokenizer, add_bos=True)
 
-    register_vllm()  # the plugin must register before vllm resolves the architecture
-    from vllm import LLM, SamplingParams
+        register_vllm()  # the plugin must register before vllm resolves the architecture
+        from vllm import LLM, SamplingParams
 
-    llm = LLM(
-        model=str(merged),
-        dtype="bfloat16",
-        enforce_eager=True,
-        gpu_memory_utilization=0.45,
-        max_model_len=512,
-        enable_mm_embeds=True,
-        trust_remote_code=True,
-        hf_overrides=HF_OVERRIDES,
-        limit_mm_per_prompt={PROJECTOR_NAME: 1},
-    )
-    output = llm.generate(
-        [{"prompt": prompt, "multi_modal_data": {PROJECTOR_NAME: projected.unsqueeze(0)}}],
-        SamplingParams(max_tokens=args.max_tokens, temperature=0.0),
-    )[0].outputs[0]
-    print(f"PROMPT: {args.question}")
-    print(f"GENERATED: {output.text!r}")
+        llm = LLM(
+            model=str(merged),
+            dtype="bfloat16",
+            enforce_eager=True,
+            gpu_memory_utilization=0.45,
+            max_model_len=512,
+            enable_mm_embeds=True,
+            trust_remote_code=True,
+            hf_overrides=HF_OVERRIDES,
+            limit_mm_per_prompt={PROJECTOR_NAME: 1},
+        )
+        output = llm.generate(
+            [{"prompt": prompt, "multi_modal_data": {PROJECTOR_NAME: projected.unsqueeze(0)}}],
+            SamplingParams(max_tokens=args.max_tokens, temperature=0.0),
+        )[0].outputs[0]
+        print(f"PROMPT: {args.question}")
+        print(f"GENERATED: {output.text!r}")
+    finally:
+        shutil.rmtree(merged, ignore_errors=True)
 
 
 if __name__ == "__main__":

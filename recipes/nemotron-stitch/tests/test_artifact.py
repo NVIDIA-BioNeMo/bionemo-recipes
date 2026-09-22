@@ -130,6 +130,18 @@ def test_read_fails_closed_on_checksum_mismatch(tmp_path):
         read_projector_artifact(tmp_path)
 
 
+def test_read_requires_checksums_for_loaded_files(tmp_path):
+    save_projector_artifact(_Model(), tmp_path, provenance=PROVENANCE, extra_state={"marker": torch.ones(6)})
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["checksums"][PROJECTOR_FILENAME]
+    del manifest["checksums"]["extra/marker.safetensors"]
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="missing checksums.*extra/marker.safetensors.*mm-projector.safetensors"):
+        read_projector_artifact(tmp_path)
+
+
 def test_read_fails_closed_on_bad_discriminator(tmp_path):
     save_projector_artifact(_Model(), tmp_path, provenance=PROVENANCE)
     manifest_path = tmp_path / MANIFEST_FILENAME

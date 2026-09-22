@@ -771,7 +771,7 @@ def _build_encode_plugin(
     def register() -> None:
         """Re-entrant; called per vLLM worker process at startup."""
         model = _import(model_cls)
-        ModelRegistry.register_model(architecture, model_cls)
+        ModelRegistry.register_model(architecture, model)
         MULTIMODAL_REGISTRY.register_processor(
             ModalityProcessor,
             info=ModalityProcessingInfo,

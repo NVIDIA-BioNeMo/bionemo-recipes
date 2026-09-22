@@ -126,6 +126,21 @@ def test_two_gpu_grpo_uses_upstream_non_colocated_lifecycle():
     assert run["policy"]["generation"]["colocated"]["enabled"] is False
 
 
+@pytest.mark.parametrize("name", ("grpo.yaml", "grpo-qwen.yaml", "grpo-lightning.yaml", "grpo-qwen3.6-35b.yaml"))
+def test_rollout_uses_the_policy_projector_artifact(name):
+    run = _load(name)
+
+    assert run["data"]["train"]["encoder_loader_kwargs"]["artifact_dir"] == "${policy.projector_artifact_path}"
+
+
+def test_eight_gpu_grpo_uses_upstream_non_colocated_lifecycle():
+    run = _load("grpo-8gpu.yaml")
+
+    assert run["policy"]["keep_policy_on_gpu"] is False
+    assert run["policy"]["generation"]["keep_vllm_on_gpu"] is False
+    assert run["policy"]["generation"]["colocated"]["enabled"] is False
+
+
 def test_qwen36_moe_configs_agree():
     for name in ("alignment-qwen3.6-35b.yaml", "sft-qwen3.6-35b.yaml"):
         config = _load(name)

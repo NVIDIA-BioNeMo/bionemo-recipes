@@ -259,6 +259,13 @@ def read_projector_artifact(source: str | Path, *, expected: dict[str, Any] | No
     if not manifest_path.is_file():
         raise ValueError(f"no {MANIFEST_FILENAME} at {source}")
     manifest = ProjectorManifest.from_dict(json.loads(manifest_path.read_text()))
+    required_checksums = {
+        PROJECTOR_FILENAME,
+        *(f"{EXTRA_STATE_DIR}/{name}.safetensors" for name in manifest.extra_state),
+    }
+    missing_checksums = sorted(required_checksums - set(manifest.checksums))
+    if missing_checksums:
+        raise ValueError(f"artifact is missing checksums for: {', '.join(missing_checksums)}")
     for filename, digest in manifest.checksums.items():
         observed = sha256_file(source / filename)
         if observed != digest:

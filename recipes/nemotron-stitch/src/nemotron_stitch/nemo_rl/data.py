@@ -163,7 +163,7 @@ def encoder_rl_processor(
     rollout_content = tokenizer.apply_chat_template(
         rollout_messages,
         tokenize=False,
-        add_generation_prompt=True,
+        add_generation_prompt=add_generation_prompt,
     )
     # The policy message log prepends the tokenizer's BOS token to the first
     # message chunk (get_formatted_message_log's add_bos_token above). The
@@ -250,10 +250,12 @@ class EncoderRLDataset:
     def set_task_spec(self, data_config: dict[str, Any]) -> None:
         from nemo_rl.data.interfaces import TaskDataSpec
 
+        if data_config.get("prompt_file"):
+            raise ValueError("encoder RL does not support prompt_file; prompts are rendered from manifest rows")
         self.data_config = data_config
         self.task_spec = TaskDataSpec(
             task_name=self.task_name,
-            prompt_file=data_config.get("prompt_file"),
+            prompt_file=None,
             system_prompt_file=data_config.get("system_prompt_file"),
         )
 

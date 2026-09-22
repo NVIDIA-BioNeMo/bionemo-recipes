@@ -94,7 +94,7 @@ def test_preparation_is_deterministic_and_dataset_reads_the_cache(tmp_path):
         (1, "train"),
         (2, "validation"),
     ]
-    assert (tmp_path / "align-train.jsonl").is_file()
+    assert (tmp_path / "first-align-train.jsonl").is_file()
 
     dataset = ManifestFeatureDataset(
         first["manifest"],

@@ -138,7 +138,7 @@ data:
   use_multiple_dataloader: false
   train:
     dataset_name: nemotron_stitch.nemo_rl.data.EncoderRLDataset
-    data_path: outputs/data-qwen/grpo-train.jsonl
+    data_path: outputs/data-qwen/manifest-grpo-train.jsonl
     encoder_loader: nemotron_stitch.nemo_rl.transport.load_cached_features
     encoder_loader_kwargs:
       cache_root: outputs/data-qwen/feature-cache

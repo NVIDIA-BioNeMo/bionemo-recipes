@@ -10,13 +10,13 @@ CONTAINER=${1:-llava-example-dev}
 # link path; override with CUDA_COMPAT_DIR='' on newer drivers. PREPEND only:
 # the image's own LD_LIBRARY_PATH carries the driver venv's z3 and cuDNN lib
 # dirs, which the x86_64 tilelang/mamba import chain needs inside Ray workers.
-CUDA_COMPAT_DIR=${CUDA_COMPAT_DIR-/data/pstjohn/cuda-compat/compat}
+CUDA_COMPAT_DIR=${CUDA_COMPAT_DIR:-}
 
 run() {
   echo "=== $1 ==="
   docker exec "$CONTAINER" bash -c "
     cd /opt/llava-example
-    export LD_LIBRARY_PATH=$CUDA_COMPAT_DIR\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH} \
+    export LD_LIBRARY_PATH=${CUDA_COMPAT_DIR:+$CUDA_COMPAT_DIR:}\${LD_LIBRARY_PATH} \
            PATH=/usr/local/cuda/bin:\$PATH \
            CUDA_HOME=/usr/local/cuda \
            PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

@@ -605,6 +605,25 @@ def test_module_mode_setup_warm_starts_from_the_initial_artifact(tmp_path):
         assert torch.equal(loaded[name], value), name
 
 
+def test_module_mode_native_resume_does_not_overwrite_restored_projector(tmp_path):
+    source = _module_model()
+    save_projector_artifact(source, tmp_path / "initial", provenance={"origin": "unit-test"}, stage=1)
+    target = _module_model()
+    with torch.no_grad():
+        for parameter in target.mm_projector.parameters():
+            parameter.fill_(7)
+    restored = {name: tensor.clone() for name, tensor in target.mm_projector.state_dict().items()}
+    cfg = _cfg(initial_artifact=str(tmp_path / "initial"), expected_provenance={"origin": "unit-test"})
+    cfg["checkpoint"] = _Cfg(restore_from="LATEST")
+    recipe = _ModuleRecipe(cfg, world_size=2)
+    recipe.model_parts = [target]
+
+    recipe.setup()
+
+    for name, value in target.mm_projector.state_dict().items():
+        assert torch.equal(value, restored[name]), name
+
+
 def test_module_mode_warm_start_restores_the_extra_family(tmp_path):
     reference = _module_model()
     reference.marker_embed_delta = nn.Parameter(torch.full((2, 4), 5.0))

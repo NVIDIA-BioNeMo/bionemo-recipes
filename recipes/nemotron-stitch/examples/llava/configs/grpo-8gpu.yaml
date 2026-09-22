@@ -13,7 +13,9 @@ cluster:
   num_nodes: 1
 
 policy:
+  keep_policy_on_gpu: false
   generation:
+    keep_vllm_on_gpu: false
     colocated:
       enabled: false
       resources:

@@ -172,7 +172,8 @@ def prepare_features(
     builder = CacheBuilder(cache_root, contract)
     for record, feature in zip(records, features, strict=True):
         key = contract.entry_key(record["sample_id"], record["feature_digest"])
-        builder.add(key, feature)
+        if not builder.has(key):
+            builder.add(key, feature)
         record["feature_key"] = key
     published = builder.publish()
 
@@ -190,7 +191,7 @@ def prepare_features(
     for stage, split in dict.fromkeys((partition.stage, partition.split) for partition in partitions):
         rows = [record for record in records if record["stage"] == stage and record["split"] == split]
         if rows:
-            manifest_path.with_name(f"{stage}-{split}.jsonl").write_text(
+            manifest_path.with_name(f"{manifest_path.stem}-{stage}-{split}.jsonl").write_text(
                 "".join(json.dumps(record, sort_keys=True) + "\n" for record in rows)
             )
     return {

@@ -197,18 +197,18 @@ placing embeddings at the wrong prompt positions.
 ## Installation
 
 Nemotron Stitch is shipped as source in BioNeMo Recipes; it is not published to
-PyPI. From a BioNeMo Framework checkout, install it in a virtual environment:
+PyPI. From a BioNeMo Recipes checkout, install it in a virtual environment:
 
 ```bash
 cd recipes/nemotron-stitch
 python -m pip install -e .
 ```
 
-To install an immutable BioNeMo revision without cloning the full repository:
+To install an immutable BioNeMo Recipes revision without cloning the full repository:
 
 ```bash
 python -m pip install \
-  "nemotron-stitch @ git+https://github.com/NVIDIA/bionemo-framework.git@<revision>#subdirectory=recipes/nemotron-stitch"
+  "nemotron-stitch @ git+https://github.com/NVIDIA-BioNeMo/bionemo-recipes.git@<revision>#subdirectory=recipes/nemotron-stitch"
 ```
 
 For development, use the checked-in lockfile:

@@ -256,13 +256,19 @@ class ProjectorRecipeMixin:
             # takes precedence over the stage-2 bridge.
             projector_cfg = self.cfg.get("projector", {})
             checkpoint = self.cfg.get("checkpoint", {})
-            source = resolve_initialization_artifact(
-                checkpoint_dir=checkpoint.get("checkpoint_dir"),
-                restore_from=checkpoint.get("restore_from"),
-                initial_artifact=projector_cfg.get("initial_artifact"),
-                stage1_artifact=projector_cfg.get("stage1_artifact"),
-                stage=int(self.cfg.model.get("mm_training_stage", 1)),
-            )
+            # Native module-mode checkpoints already restore projector tensors
+            # with the model. Do not let an explicit warm start overwrite them.
+            source = None
+            if checkpoint.get("restore_from"):
+                logging.info("Native checkpoint resume restores module-owned projector state")
+            else:
+                source = resolve_initialization_artifact(
+                    checkpoint_dir=checkpoint.get("checkpoint_dir"),
+                    restore_from=None,
+                    initial_artifact=projector_cfg.get("initial_artifact"),
+                    stage1_artifact=projector_cfg.get("stage1_artifact"),
+                    stage=int(self.cfg.model.get("mm_training_stage", 1)),
+                )
             if source is not None:
                 expected = projector_cfg.get("expected_provenance")
                 manifest = load_projector_artifact(

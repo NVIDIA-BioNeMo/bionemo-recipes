@@ -319,6 +319,8 @@ class FeatureCollator:
                 if start < 0 and text != text.lstrip():
                     tokens = list(self.tokenizer(text.lstrip(), add_special_tokens=False).input_ids)
                     start, end = _find_pattern(full_ids, tokens, search_start)
+                if start < 0 and text.strip():
+                    raise ValueError(f"assistant content is absent from the rendered chat template: {text!r}")
                 if start >= 0:
                     labels[start:end] = full_ids[start:end]
                     search_start = end
@@ -839,13 +841,14 @@ def _cached_collator(
     chat_template_kwargs: tuple | None,
     supervision: str,
     truncate: bool,
+    trust_remote_code: bool,
 ) -> FeatureCollator:
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name_or_path,
         revision=tokenizer_revision,
-        trust_remote_code=True,
+        trust_remote_code=trust_remote_code,
     )
     return FeatureCollator(
         tokenizer,
@@ -869,9 +872,12 @@ def collate_fn(
     chat_template_kwargs: dict[str, Any] | None = None,
     supervision: str = "suffix",
     truncate: bool = False,
+    trust_remote_code: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Config-friendly, process-local-cached entry point for :class:`FeatureCollator`."""
     template_kwargs = tuple(sorted((chat_template_kwargs or {}).items()))
+    if trust_remote_code and not tokenizer_revision:
+        raise ValueError("trust_remote_code requires a pinned tokenizer_revision")
     return _cached_collator(
         tokenizer_name_or_path,
         tokenizer_revision,
@@ -881,6 +887,7 @@ def collate_fn(
         template_kwargs,
         supervision,
         bool(truncate),
+        bool(trust_remote_code),
     )(batch)
 
 
