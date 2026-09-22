@@ -48,6 +48,7 @@ DOCKER_RUN_ARGS = [
 
 CUSTOM_CONTAINERS = {
     "models/amplify": "svcbionemo023/bionemo-framework:amplify-model-devcontainer-082025",
+    "recipes/nemotron-stitch": "svcbionemo023/bionemo-framework:nemo-rl-ci-b03da0f4-amd64",
 }
 
 DEFAULT_CONTAINER = "nvcr.io/nvidia/pytorch:26.07-py3"

@@ -43,6 +43,7 @@ The use cases of BioNeMo Recipes include:
 | `recipes/`<br>`codonfm_ptl_te`                                                                   | PyTorch Lightning recipe for [CodonFM](https://research.nvidia.com/labs/dbr/assets/data/manuscripts/nv-codonfm-preprint.pdf) | FSDP         | ✅   | 🚧                | ✅  | 🚧        | 🚧                  | 🚧                  | ❌  |
 | `recipes/`<br>`geneformer_native_te_mfsdp_fp8`                                                   | Recipe for geneformer HF model                                                                                               | mFSDP        | ✅   | ✅                | 🚧  | 🚧        | 🚧                  | 🚧                  | ❌  |
 | `recipes/`<br>`vit`                                                                              | Recipe for vision transformer                                                                                                | mFSDP        | ✅   | 🚧                | ❌  | ❌        | ❌                  | ❌                  | ❌  |
+| `recipes/`<br>`nemotron-stitch`                                                                  | Soft-token multimodal post-training with NeMo AutoModel, NeMo RL, and vLLM                                                   | FSDP2        | ✅   | ❌                | ✅  | ❌        | ❌                  | ❌                  | ❌  |
 
 ✅: Supported <br/>
 🚧: Under development, will be supported soon <br/>
@@ -85,7 +86,8 @@ Self-contained training examples demonstrating best practices for scaling biolog
 - **Scaling strategies**: Single-GPU to multi-node training patterns
 - **Benchmarked performance**: Validated throughput and convergence metrics
 
-Recipes are **not pip-installable packages** but serve as reference implementations that users can adapt for their own research.
+Recipes are source-distributed reference implementations that users can adapt for their own research. Most are run directly;
+recipes that include package metadata, such as `nemotron-stitch`, document how to install from a checkout or immutable Git revision.
 
 ### Interpretability (`interpretability/`)
 
