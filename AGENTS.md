@@ -88,18 +88,15 @@ the starting point instead of building a one-off suite.
 
 ## Agent skills
 
-Skills live in `skills/{skill_name}/` (canonical, SRC-2/SRC-3 compliant with the
+Skills live in `skills/{skill_name}/` (canonical, compatible with the
 [BioNeMo Agent Toolkit](https://github.com/NVIDIA-BioNeMo/bionemo-agent-toolkit)).
-`.claude/skills/{skill_name}` is a relative symlink into `skills/` for local Claude Code
-discovery. Always edit the canonical copy; never edit through the symlink.
+`.claude/skills` and `.agents/skills` both symlink to `skills/` so every harness sees new skills
+without a per-skill symlink update. Always edit the canonical copy; never edit through a symlink.
 
 `bionemo-recipes-acceleration` ports an external codebase onto the Transformer Engine accelerations
 in `models/` and `recipes/`, then validates the port with the shared `BaseModelTest` harness.
 
-- **SRC-4 rule:** skill documentation must cite repo paths as `$BIONEMO_RECIPES/<path>`, not as
-  bare `models/...` or `recipes/...`. Bare paths escape the skill subtree and break when vendored.
-  Example: `$BIONEMO_RECIPES/models/esm2/convert.py::_pack_qkv_weight`.
-- `ci/scripts/check_skill_references.py` fails the commit on two conditions: (1) a
-  `$BIONEMO_RECIPES/`-prefixed path that no longer exists, and (2) a bare `models/` or `recipes/`
-  path in a skill file (SRC-4 violation). Run it after moving or deleting files a skill references.
+- **Path citation rule:** skill documentation must cite repo paths as `$BIONEMO_RECIPES/<path>`,
+  not as bare `models/...` or `recipes/...`. Bare paths escape the skill subtree and break when
+  vendored. Example: `$BIONEMO_RECIPES/models/esm2/convert.py::_pack_qkv_weight`.
 - Skills read `models/` and `recipes/` as references only. They must not modify this repository.

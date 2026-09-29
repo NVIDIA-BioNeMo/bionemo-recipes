@@ -2,12 +2,12 @@
 name: bionemo-recipes-acceleration
 description: >-
   Accelerate existing PyTorch/HuggingFace model training code with NVIDIA Transformer Engine,
-  following the patterns proven in BioNeMo Recipes: FP8/MXFP8/NVFP4 quantization recipes, fused
-  TransformerLayer, THD sequence packing, and quantized_model_init. Measures precision choice with
-  TE's GEMM benchmark and validates the port with the BioNeMo BaseModelTest harness. Hard-stops
-  with a report only for architectures with no TE analogue — diffusion, GNN/equivariant, and
-  state-space models. Do NOT use for genomics pipeline acceleration — use
-  genomics-workflow-acceleration.
+  following the patterns demonstrated in BioNeMo Recipes: FP8/MXFP8/NVFP4 quantization recipes,
+  fused TransformerLayer, THD sequence packing, and quantized_model_init. Measure precision choice
+  with TE's GEMM benchmark and validate the port with the BioNeMo BaseModelTest harness. Best-effort
+  kernel swaps for architectures with no TE analogue for their top-level block — diffusion,
+  GNN/equivariant, state-space models, and non-dot-product attention mechanisms. Hard-stop with a report
+  only when the target model cannot be located or run.
 license: Apache-2.0 AND CC-BY-4.0
 compatibility: "torch>=2.4; transformer_engine[pytorch]>=2.0; CUDA GPU (Hopper or newer for FP8)"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
@@ -48,11 +48,12 @@ the skill stops and explains why rather than producing an unvalidated port.
 - "quantized_model_init", "FusedAdam", "te.TransformerLayer"
 - "what precision should I use for training on H100/H200/B200"
 - "accelerate my ESM2 / Llama / Mixtral fine-tuning"
+- Diffusion, score-based, equivariant (SE3/E3), GNN, SSM/Mamba models — best-effort Depth C only, no
+  full TE block; see `references/architecture-matching.md`
 
 **Do NOT trigger on:**
 
 - Genomics pipeline (Nextflow, Snakemake, WDL) → use `genomics-workflow-acceleration`
-- Diffusion, score-based, equivariant (SE3/E3), GNN, SSM/Mamba models → hard stop with report
 - Megatron-LM training → direct user to `$BIONEMO_RECIPES/recipes/evo2_megatron/` (sequence/genomics
   models) or `$BIONEMO_RECIPES/recipes/eden_megatron/` (protein/chemistry models)
 - Inference serving / vLLM → `$BIONEMO_RECIPES/recipes/vllm_inference/`
@@ -71,11 +72,21 @@ Output: branch `bionemo-accel/encoder-mlm` with FP8 configs, parity-checked, and
 
 Output: full TE port with THD attention, `DataCollatorWithFlattening`, Tier 1 + Tier 2 validation, `ACCELERATION_REPORT.md`.
 
-**Out-of-scope — hard stop:**
+**No full TE block — best-effort Depth C:**
 
 > "Add FP8 to my SE(3)-equivariant GNN for protein structure prediction"
 
-Output: `ACCELERATION_REPORT.md` identifying the architecture as equivariant/GNN, zero source files modified, reason for rejection named.
+Output: `ACCELERATION_REPORT.md` identifying the architecture as equivariant/GNN, linear/norm/MLP
+layers outside the message-passing step swapped for TE, message passing itself left untouched and
+named as the reason, Tier 1 validation only.
+
+**Cannot be attempted — hard stop:**
+
+> "Add FP8 to this model" (model definition generated dynamically at runtime, no static class to
+> locate)
+
+Output: `ACCELERATION_REPORT.md` stating the model definition could not be located, zero source
+files modified.
 
 ## Prerequisites
 
@@ -128,31 +139,40 @@ the correct one; conflating them produces misleading reports and blocks retries.
 | Class   | Meaning                                                                                                                                                                                                                                   | Retryable | Examples                                                                                                                                              |
 | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ENV_`  | Declared dependencies exist but could not be installed or imported in this environment. The architecture has not been judged. The run cannot proceed until the environment is fixed, but a clean environment may succeed.                 | Yes       | `torch` or `transformer_engine` not importable; `probe_hardware.py` exits 1 due to a missing package; `pip install` failed; wrong Python interpreter. |
-| `ARCH_` | The target architecture has no TE analogue, or the model definition cannot be located or executed for a reason intrinsic to the target (no weights, no tokenizer, no sample input). No amount of environment fixing will unblock the run. | No        | Diffusion/score-based, GNN/equivariant, state-space model; causal vs bidirectional mismatch; model class defined dynamically at runtime.              |
+| `ARCH_` | The model definition cannot be located or executed for a reason intrinsic to the target (no weights, no tokenizer, no sample input, dynamically-generated model class). No amount of environment fixing will unblock the run. | No        | Model class defined dynamically at runtime; no weights or tokenizer available for the parity check.              |
 
 **Critical distinction:** "no forward pass can be run" is `ARCH_` only when the blocker is
 intrinsic to the target (missing weights, no tokenizer, purely-generated code). If the blocker is
-an uninstallable dependency, emit `ENV_` and stop — do not treat it as an architectural judgment.
+an uninstallable dependency, emit `ENV_` and stop — do not treat it as an architectural judgment. An
+architecture with no TE analogue for its top-level block (diffusion, GNN/equivariant, state-space,
+or a non-dot-product attention mechanism) is neither class — it is not a failure, it routes to Depth
+C best effort in `references/te-conversion.md`.
 
 ## Guardrails
 
 1. **Match before you modify.** Phase 1 decides the reference and the depth before any edit. An
-   architecture with no TE analogue → write the report and stop. A weak-but-workable match is not a
-   stop: port at the depth the block supports (down to Depth C kernel swaps) and state the
-   limitation. What is never acceptable is a port presented as validated when it is not.
-2. **Never modify the BioNeMo Recipes repository** (`$BIONEMO_RECIPES`). It is a read-only
-   reference. All edits land in the target codebase, on a new branch.
-3. **Low precision ships disabled.** Generate FP8/FP4 configs with `enabled: false` — the user
+   architecture with no TE analogue for its top-level block is not a stop: port at the depth the
+   block supports, down to Depth C kernel swaps around the irreducibly custom core, and state the
+   limitation. Only a model that cannot be located or run at all is a stop. What is never acceptable
+   is a port presented as more validated than it is.
+2. **Low precision ships disabled.** Generate FP8/FP4 configs with `enabled: false` — the user
    opts in with one line.
-4. **Preserve the original.** The parity check needs the unported model as its baseline.
-5. **Report honestly.** Every acceleration skipped, every test that was skipped rather than
+3. **Preserve the original.** The parity check needs the unported model as its baseline.
+4. **Report honestly.** Every acceleration skipped, every test that was skipped rather than
    passed, and every caveat goes in `ACCELERATION_REPORT.md`.
+5. **When unsure whether TE supports something, check TE itself before ruling it out.** Before writing a target off as
+   "no TE analogue" or "unavailable at this depth," check the actual signature/docstring in
+   [NVIDIA/TransformerEngine](https://github.com/NVIDIA/TransformerEngine)
+   (`transformer_engine/pytorch/`) or <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html>
+   rather than trusting this skill's prose from memory. A claim about TE behavior that isn't
+   backed by a reference-menu example or verified source is a guess, not a fact — say so in the
+   report if it can't be verified.
 
 ## Composed pieces (read on demand — do not inline)
 
 | Read when                                                           | File                                  |
 | ------------------------------------------------------------------- | ------------------------------------- |
-| Phase 1 — architecture matching and hard-stop decision              | `references/architecture-matching.md` |
+| Phase 1 — architecture matching and acceleration depth              | `references/architecture-matching.md` |
 | Phases 2–3 — hardware probe output, GEMM benchmark, recipe decision | `references/precision-selection.md`   |
 | Phase 4 — rewrite depth, converter, autocast, quantized_model_init  | `references/te-conversion.md`         |
 | Phase 4 — THD packing, cu_seqlens, DataCollatorWithFlattening       | `references/sequence-packing.md`      |
@@ -185,14 +205,17 @@ Install in the same environment as `probe_hardware.py` (same interpreter). If in
 record the error in `.bionemo-accel/inventory.json` under `"dep_install_error"` and emit `ENV_`
 — do not proceed to architecture matching until the target's own deps are resolvable.
 
-**Phase 1 — Architecture match, or hard stop.** Read `references/architecture-matching.md`. Score
+**Phase 1 — Architecture match and depth.** Read `references/architecture-matching.md`. Score
 the target on the six rubric axes against the reference menu (encoder/MLM pre-norm and post-norm,
-causal LM dense, MoE, genomics LM, encoder–decoder). **Attention pattern is the only required
-match** — the other five axes select the reference and the port depth, and each mismatch is
-recorded as a caveat. Write `.bionemo-accel/match.json`, noting which reference each piece of the
-port comes from. Hard-stop only for diffusion, GNN/equivariant, or state-space architectures, an
-attention-pattern mismatch, an unlocatable model definition, or no runnable forward pass; then
-write the hard-stop `ACCELERATION_REPORT.md` and exit.
+causal LM dense, MoE, genomics LM, encoder–decoder). All six axes are advisory — they select the
+reference and how much of the block is hand-built, and each mismatch is recorded as a caveat, not a
+rejection; `te.TransformerLayer`'s `self_attn_mask_type` / `window_size` cover causal, bidirectional,
+sliding-window, and custom-mask attention as configuration, not a fork in which reference applies.
+Only an architecture family with no TE analogue for its top-level block (diffusion, GNN/equivariant,
+state-space, or a non-dot-product attention mechanism) falls to Depth C best-effort kernel swaps
+instead, never a stop. Write `.bionemo-accel/match.json`, noting which reference each piece of the
+port comes from. Hard-stop only when the model definition cannot be located or no forward pass can
+be run; then write the hard-stop `ACCELERATION_REPORT.md` and exit.
 
 **Phase 2 — Hardware and TE probe.** Run:
 
@@ -290,7 +313,6 @@ Full protocol in `references/validation.md`. Summary:
 
 ## Responsible use
 
-- Never modify `$BIONEMO_RECIPES` — it is a read-only reference.
 - Low precision ships disabled; the user enables it deliberately.
 - Report every skipped test, loosened tolerance, and limitation in `ACCELERATION_REPORT.md`.
 
@@ -366,7 +388,7 @@ All artifacts are written into the **target repo**, never into `$BIONEMO_RECIPES
 | `tests/test_modeling_ported.py`      | 5     | Depth B only                   | BaseModelTest harness subclass for the ported model                                                                                |
 | `conftest.py`                        | 5     | Depth B only                   | pytest plugin registration (`pytest_plugins = ["tests.common.fixtures"]`) — written to repo root so pytest permits the declaration |
 | `ACCELERATION_REPORT.md`             | 6     | Always                         | Final report: measured speedups, one-line FP8 enable config, limitations                                                           |
-| `ACCELERATION_REPORT.md` (hard stop) | 1     | On out-of-scope architecture   | Rejection reason (no TE analogue, attention-pattern mismatch, or no runnable forward pass); no other files written or modified     |
+| `ACCELERATION_REPORT.md` (hard stop) | 1     | Model cannot be located or run | Blocker reason (unlocatable model definition or no runnable forward pass); no other files written or modified                     |
 
 **Branch:** `bionemo-accel/<family>` is created in the target repo on a successful port (e.g. `bionemo-accel/encoder-mlm`, `bionemo-accel/causal-lm-dense`).
 
@@ -374,7 +396,7 @@ All artifacts are written into the **target repo**, never into `$BIONEMO_RECIPES
 
 | Error / Symptom                                    | Cause                                                                                                                                  | Solution                                                                                                                                 |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Hard stop at Phase 1                               | Architecture has no TE analogue (diffusion, GNN/equivariant, state-space), attention pattern mismatches, or no forward pass can be run | Read `references/architecture-matching.md`. An advisory-axis mismatch alone is never a stop — it selects the reference and depth instead |
+| Hard stop at Phase 1                               | Model definition cannot be located, or no forward pass can be run | Read `references/architecture-matching.md`. An architecture with no TE analogue (diffusion, GNN/equivariant, state-space, or a non-dot-product attention mechanism) is never a stop — it falls to Depth C best-effort kernel swaps in `references/te-conversion.md` instead |
 | `Could not find benchmarks/gemm/benchmark_gemm.py` | TE pip wheel does not include source; no NGC container or local checkout found                                                         | Pass `--te-source <path>`, set `TE_SOURCE_DIR`, or add `--allow-clone`                                                                   |
 | GEMM speedup near 1.0×                             | Silent kernel fallback to a lower-precision kernel                                                                                     | Re-run with `--verbose-kernels`; confirm expected dispatch in `NVTE_LOG_LEVEL=1` output before concluding there is no benefit            |
 | `torch not importable` after install               | Script ran in the wrong Python environment                                                                                             | Verify `which python` inside your training venv/conda env; re-run `probe_hardware.py` in that environment                                |

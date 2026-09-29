@@ -31,7 +31,7 @@ ______________________________________________________________________
 
 | Rubric axis | Target | Reference | Verdict |
 | --- | --- | --- | --- |
-| Attention pattern | {{...}} | {{...}} | {{match/mismatch}} |
+| Attention masking | {{...}} | {{...}} | {{match/mismatch}} |
 | Normalization | {{...}} | {{...}} | {{match/mismatch}} |
 | MLP form | {{...}} | {{...}} | {{match/mismatch}} |
 | Positional encoding | {{...}} | {{...}} | {{match/mismatch}} |
@@ -40,14 +40,8 @@ ______________________________________________________________________
 
 ### Why this is disqualifying
 
-{{DISQUALIFYING_REASON}}. This must be one of: an architecture with no TE analogue (diffusion,
-GNN/equivariant, state-space); an attention-pattern mismatch, which is not recoverable by
-configuration; a model definition that cannot be located; or the absence of a runnable forward pass,
-which leaves no way to validate a port at all.
-
-A mismatch on normalization, MLP form, positional encoding, attention grouping, or head structure is
-**not** a valid reason to stop — those select the reference and the port depth. If one of those is
-the only problem, this is the wrong report variant; port at the depth the block supports instead.
+{{DISQUALIFYING_REASON}}. This must be one of: a model definition that cannot be located, or the
+absence of a runnable forward pass, which leaves no way to validate a port at all.
 
 **No files were modified.**
 

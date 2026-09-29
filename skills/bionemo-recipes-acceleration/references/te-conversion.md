@@ -11,13 +11,20 @@ reference implementation exactly. Do not blend depths.
 | HF-style transformer blocks, pre-norm, no TE                             | **B** — full port + converter     |
 | HF-style transformer blocks, post-norm, no TE                            | **B-postnorm** — hand-built block |
 | Two stacks with cross-attention (T5-style)                               | **B-encdec** — two TE stacks      |
-| Block cannot become a TE layer, but has clean `nn.Linear` / norm sub-ops | **C** — kernel swaps only         |
+| Block cannot become a TE layer (structural quirk, non-dot-product attention mechanism, or no TE analogue for the sequence-mixing core) but has clean `nn.Linear` / norm / attention sub-ops | **C** — kernel swaps only |
 
-Depth C is the landing spot for a target that passed Phase 1 but whose block has a structural quirk
-(an extra gate, an unusual residual, exotic MoE routing) that no TE layer can express. It is a real
-outcome, not a consolation prize: the report says plainly that no TE transformer block was
-substituted, and lists exactly which architecture-agnostic wins were applied. Only the three
-out-of-scope families in `references/architecture-matching.md` produce no port at all.
+Depth C is the landing spot for a target whose block has a structural quirk (an extra gate, an
+unusual residual, exotic MoE routing) or an attention mechanism that isn't maskable scaled-dot-product
+attention at all (linear/kernelized attention, retrieval-augmented attention, block-sparse routing).
+Causal vs bidirectional, sliding window, and custom masks are not Depth C triggers — those are
+`self_attn_mask_type` / `window_size` config on `te.TransformerLayer`, see
+`references/architecture-matching.md`. Depth C is also the landing spot for diffusion,
+GNN/equivariant, and state-space architectures:
+the sequence-mixing core (a scan, message passing, denoiser conditioning) stays custom, but the
+projections, norms, MLPs, and — where a bare attention core fits — the attention computation itself
+still swap. It is a real outcome, not a consolation prize: the report says plainly that no TE
+transformer block was substituted, and lists exactly which wins were applied. Only a target whose
+model definition cannot be located, or that has no runnable forward pass, produces no port at all.
 
 ### Depth B-postnorm
 
@@ -269,24 +276,67 @@ ______________________________________________________________________
 
 ## Depth C — targeted kernel swaps
 
-The fallback when the block has a quirk no TE layer can express. Apply only these, and only where
-the shapes are compatible:
+The fallback when the block has a quirk no TE layer can express, including a non-dot-product
+attention mechanism or a sequence-mixing core (scan, message passing, denoiser conditioning) with no
+TE analogue at all. Apply only these, and only where the shapes are compatible:
 
 - `nn.Linear` → `transformer_engine.pytorch.Linear`
 - `LayerNorm` immediately followed by `Linear` → `transformer_engine.pytorch.LayerNormLinear`
 - `LayerNorm` + two-layer MLP → `transformer_engine.pytorch.LayerNormMLP`
 - `torch.optim.Adam*` → `transformer_engine.pytorch.optimizers.FusedAdam`
+- A standalone attention core with custom QKV/mask shaping around it (self- or cross-attention) →
+  `transformer_engine.pytorch.attention.dot_product_attention.DotProductAttention`, keeping the
+  custom reshape/GQA/masking logic in place. This does not require a full `te.TransformerLayer`; see
+  `$BIONEMO_RECIPES/recipes/codonfm_ptl_te/src/models/components/encodon_te_mha.py` for a worked
+  example of both self- and T5-style cross-attention built this way.
+
+THD packing and `quantized_model_init` are **not** blocked by the missing `TransformerLayer` — both
+are properties of the individual TE modules above, not the layer wrapper:
+
+- **THD packing works on a standalone `DotProductAttention`.** `forward()` takes `qkv_format="thd"`,
+  `cu_seqlens_q` / `cu_seqlens_kv`, and `max_seqlen_q` / `max_seqlen_kv` directly — the varlen kernel
+  dispatch this buys is inside the attention core being swapped, not the surrounding layer. The
+  target still has to thread `cu_seqlens` from its own collator into that call by hand, same as the
+  custom QKV/mask shaping already required above.
+- **`quantized_model_init` wraps module construction, not `TransformerLayer` construction
+  specifically.** Any `transformer_engine.pytorch.Linear` / `LayerNormLinear` / `LayerNormMLP` built
+  inside the context manager gets quantized-only parameters, per its own docstring example
+  (`with quantized_model_init(enabled=True): model = transformer_engine.pytorch.Linear(768, 768)`).
+  Wrap the Depth C module construction in it the same way Depth B wraps the full model.
+
+What genuinely has no Depth C equivalent is **fused QKV** (`fuse_qkv_params` /
+`qkv_weight_interleaved`): that packed weight layout is a `te.TransformerLayer` /
+`te.MultiheadAttention` construction detail, not a property of bare `DotProductAttention`, which
+takes already-separated Q/K/V tensors.
 
 Also available, and architecture-agnostic: `torch.compile` on the model or step function, and
 AMP/BF16 autocast if the loop is still FP32.
 
 Wrap the forward in a single outer `transformer_engine.pytorch.autocast(enabled=True, recipe=...)`.
 
-Validation is Tier 1 only. State the explicitly-not-applied list in the report: fused QKV, THD
-sequence packing, and `quantized_model_init` all require a `TransformerLayer` and are unavailable at
-this depth. Name the structural quirk that blocked a deeper port, and do not present the result as a
-full FP8 port. Expect a materially smaller speedup than the GEMM benchmark suggests, because only
-the swapped projections are affected.
+If the target already builds its block from named, independently swappable sub-modules (a
+submodules dataclass, a `build_module`-style factory), mirror that shape rather than patching calls
+inline — see
+`$BIONEMO_RECIPES/recipes/evo2_megatron/src/bionemo/evo2/models/megatron/hyena/hyena_layer_specs.py`
+and `hyena_layer.py`, where the Hyena (state-space) block's projections, norm, and MLP are each an
+independently swappable slot and only the scan/conv mixer itself is unconditionally custom. This is
+the ideal structure when the target already supports it, not a requirement — an inline pass over
+`nn.Linear`/`LayerNorm`/attention calls is an acceptable outcome too.
+
+Validation is Tier 1 only. State the explicitly-not-applied list in the report: fused QKV requires a
+`TransformerLayer` and is unavailable at this depth; THD packing and `quantized_model_init` are
+available (see above) but hand-wired rather than `TransformerLayer`-managed, so say so explicitly if
+either was skipped anyway. Name the structural quirk or sequence-mixing core that blocked a deeper
+port, and do not present the result as a full FP8 port. Expect a materially smaller speedup than the
+GEMM benchmark
+suggests, because only the swapped sub-layers are affected.
+
+When no BioNeMo Recipes reference or Depth C pattern above covers the target's sequence-mixing core
+at all, `github.com/NVIDIA/Megatron-LM` and `github.com/NVIDIA/Megatron-Bridge` are read-only
+inspiration for how that layer type has been wired to TE elsewhere — same status as TE's own docs,
+never a repo to edit or copy wholesale. Treat anything sourced from them as **unvalidated by
+BioNeMo's `BaseModelTest` suite**: say so explicitly in the report, and hold it to Tier 1 parity at
+minimum, not a lighter bar than the rest of Depth C.
 
 ______________________________________________________________________
 

@@ -1,6 +1,6 @@
-# Architecture matching and the hard stop
+# Architecture matching and acceleration depth
 
-Phase 1 decides how the port happens, and in a few cases whether it happens at all. Get this wrong
+Phase 1 decides how the port happens, and in rare cases whether it happens at all. Get this wrong
 and everything downstream is a plausible-looking model that silently computes something else.
 
 Most targets are portable. The job of this phase is to pick the right reference to copy and the
@@ -132,68 +132,69 @@ plumbing, and padded-vocab treatment from `$BIONEMO_RECIPES/models/esm2/modeling
 
 ## The rubric
 
-Score the target on six axes. Record each as `match` / `mismatch` / `unknown` in
-`.bionemo-accel/match.json`, with the evidence (file and symbol) that decided it.
+Score the target against the reference menu above on six axes. Record each as `match` / `mismatch` /
+`unknown` in `.bionemo-accel/match.json` with the specific deciding evidence (file and symbol) —
+"looks like Llama" is not evidence; `model.py::DecoderBlock` uses `RMSNorm` + `SwiGLU` +
+`num_key_value_heads=8` is.
 
 | Axis                | What to look for                                              |
 | ------------------- | ------------------------------------------------------------- |
-| Attention pattern   | causal vs bidirectional; sliding window; any custom bias term |
+| Attention masking   | causal vs bidirectional; sliding window; any custom bias term |
 | Normalization       | LayerNorm vs RMSNorm; pre-norm vs post-norm                   |
 | MLP form            | plain up/down + activation vs gated SwiGLU vs MoE             |
 | Positional encoding | learned absolute, RoPE, ALiBi, relative, none                 |
 | Attention grouping  | MHA vs GQA vs MQA                                             |
 | Head structure      | MLM, causal LM, classification, regression, multi-task        |
 
-**Proceed when attention pattern matches.** Causal vs bidirectional is the one axis that changes
-what the model computes and cannot be recovered by configuration. The other five are advisory: they
-decide *which reference to copy and how much of the block you write by hand*, and each mismatch goes
-in the report as a caveat, not a rejection.
+**All six axes are advisory.** A mismatch is a caveat in the report, never a rejection — it only
+picks which reference to mirror and how much of the block is hand-built; match against the
+"Fingerprint" lists above for the mechanics of each. Three traps are worth flagging explicitly:
 
-What a mismatch on each advisory axis actually costs:
+- **Attention masking is a kwarg, not a fork.** `self_attn_mask_type=` / `window_size=` on
+  `te.TransformerLayer` cover causal, bidirectional, sliding window, and arbitrary custom masks — see
+  the Depth B example in `references/te-conversion.md`. What has no TE analogue is a non-dot-product
+  attention *mechanism* (see "No full TE block" below), not a masking difference.
+- **Normalization placement picks the depth track, not just the reference.** Pre-norm builds on
+  `te.TransformerLayer` (Depth B); post-norm cannot and needs the hand-assembled block (Depth
+  B-postnorm, geneformer's `TEBertLayer`) — see "Encoder / masked LM — post-norm" above.
+- **Positional encoding can be load-bearing at init time.**
+  `$BIONEMO_RECIPES/models/esm2/modeling_esm_te.py::NVEsmEmbeddings` raises on anything but rotary —
+  a target with no position encoding drops the `RotaryPositionEmbedding` construction entirely rather
+  than configuring it off.
 
-- **Normalization.** LayerNorm vs RMSNorm is a `normalization=` kwarg on the TE layer. Pre- vs
-  post-norm selects the reference: pre-norm → `te.TransformerLayer` (ESM-2); post-norm →
-  hand-assembled `TEBertLayer` (geneformer). Neither is a stop.
-- **MLP form.** This axis is about *structure* — plain up/down vs gated vs MoE. **Activation choice
-  is not a mismatch.** `te.TransformerLayer` accepts `gelu, geglu, qgelu, qgeglu, relu, reglu, srelu, sreglu, silu, swiglu`; `$BIONEMO_RECIPES/models/esm2/modeling_esm_te.py` passes
-  `config.encoder_activation` through unmodified, `$BIONEMO_RECIPES/models/codonfm/modeling_codonfm_te.py`
-  whitelists `gelu`/`relu`/`silu`, and `$BIONEMO_RECIPES/models/geneformer/` is ReLU throughout. A
-  ReLU encoder is an encoder.
-- **Positional encoding.** A config choice, including `none`. Note that
-  `$BIONEMO_RECIPES/models/esm2/modeling_esm_te.py::NVEsmEmbeddings` raises on anything but rotary,
-  so a target with no position encoding drops the `RotaryPositionEmbedding` construction and the
-  `rotary_pos_emb=` kwarg rather than configuring them.
-- **Attention grouping.** `num_gqa_groups`. The encoder references set it equal to
-  `num_attention_heads` for plain MHA.
-- **Head structure.** Multi-task, regression, and continuous-value heads are portable — the block is
-  what gets accelerated. What they change is the *validation* path: with no HF counterpart, Tier 2
-  follows the codonfm template in `references/validation.md`.
+## No full TE block: best-effort Depth C
 
-Record the confidence and the *specific* deciding evidence. "Looks like Llama" is not evidence;
-`model.py::DecoderBlock` uses `RMSNorm` + `SwiGLU` + `num_key_value_heads=8` is.
-
-## Hard stop: architectures that are out of scope
-
-Three architecture families have no TE analogue at all. Stop, write the report, change nothing:
+No architecture family is refused outright. Four families have no TE analogue for their top-level
+block — but that is not the same as zero TE benefit. Route these to Depth C in
+`references/te-conversion.md`: swap what's swappable (linear projections, norms, MLPs, and, where a
+bare attention core fits, the attention computation itself), name the part that stays custom, and
+validate Tier 1 only.
 
 - **Diffusion / score-based models** — the denoiser conditioning path (timestep embeddings, AdaLN
-  modulation) is not expressible as a `te.TransformerLayer`.
+  modulation) is not expressible as a `te.TransformerLayer`. The linear/norm/MLP layers elsewhere in
+  the denoiser still swap.
 - **GNNs and equivariant networks** (SE(3), E(3), tensor-field networks) — message passing and
-  irrep-typed tensors have no TE analogue.
-- **State-space models** (Mamba, S4, Hyena) — the block is a scan, not attention. Note: Evo2 lives
-  in `$BIONEMO_RECIPES/recipes/evo2_megatron/` on the Megatron stack, which this skill does not target.
-
-Also stop when:
-
-- The attention pattern does not match any reference — causal vs bidirectional is not configurable.
-- The model definition cannot be located or is generated dynamically at runtime.
-- No forward pass can be run for the parity check because of a reason intrinsic to the target —
-  no weights, no tokenizer, no sample input — because then Phase 5 cannot prove anything. Use
-  failure class `ARCH_` here.
-
-Do **not** use `ARCH_` when a forward pass cannot be run because a dependency failed to install.
-That is failure class `ENV_`: the architecture has not been judged, and the run may succeed in a
-clean environment. See the "Failure classes" section in `SKILL.md`.
+  irrep-typed tensors have no TE analogue. Any plain linear/norm/MLP sub-layers outside the
+  message-passing step still swap.
+- **State-space models** (Mamba, S4, Hyena) — the sequence-mixing block is a scan, not attention, and
+  has no TE analogue. Everything around the scan — input/output projections, norms, MLPs, and any
+  interleaved full-attention layers — still swaps. Evo2's Hyena stack in
+  `$BIONEMO_RECIPES/recipes/evo2_megatron/src/bionemo/evo2/models/megatron/hyena/hyena_layer_specs.py`
+  and `hyena_layer.py` is this repo's own worked example: the mixer (`HyenaMixer`, the actual
+  conv/recurrence) is unconditionally custom, but its projections, norm, and MLP — and the
+  interleaved attention layers' projections, norm, MLP, and attention core — are all built as
+  independently swappable slots and share the same TE building blocks. When the target already
+  builds its block from similarly named, swappable sub-modules, mirror that shape; otherwise an
+  inline pass over the target's `nn.Linear`/`LayerNorm`/attention calls is a fine substitute — see
+  `references/te-conversion.md`.
+- **Non-dot-product attention mechanisms** — linear/kernelized attention (Performer, linear
+  transformers), retrieval-augmented attention, and block-sparse routing that changes the compute
+  pattern itself (not just which positions are masked) have no TE analogue; `DotProductAttention`
+  only implements maskable scaled-dot-product attention (masking itself is config — see the rubric
+  above). The projections, norms, and MLPs around the attention computation still swap, and where the
+  core is genuinely scaled-dot-product attention under nonstandard QKV/mask shaping, it often still
+  fits: see `$BIONEMO_RECIPES/recipes/codonfm_ptl_te/src/models/components/encodon_te_mha.py` for
+  `DotProductAttention` used standalone, for both self- and cross-attention.
 
 Not a hard stop, but route elsewhere: **Megatron-LM based code** —
 `$BIONEMO_RECIPES/recipes/eden_megatron/` and `$BIONEMO_RECIPES/recipes/evo2_megatron/` already
@@ -202,23 +203,29 @@ handle precision through `--mixed-precision-recipe`. Point the user there rather
 Not a hard stop, but Tier 1 only: **vision-only backbones** — `$BIONEMO_RECIPES/recipes/vit/` exists
 but has no `BaseModelTest` coverage, so parity rests on the Tier 1 check alone. Say so in the report.
 
-When an advisory axis is weak enough that `te.TransformerLayer` cannot express the block at all, the
-answer is Depth C in `references/te-conversion.md` — architecture-agnostic wins with the limitation
-stated — not a refusal.
+## Hard stop: when no port can be attempted at all
 
-## The hard-stop report
+Only two conditions block every depth, including Depth C, because they mean the target cannot even
+be inspected or run — not because of its architecture. Use failure class `ARCH_`:
 
-All architectural hard-stops use failure class `ARCH_`. Fill `assets/ACCELERATION_REPORT.md.tmpl`
-with the hard-stop variant. It must state:
+- The model definition cannot be located or is generated dynamically at runtime.
+- No forward pass can be run for the parity check because of a reason intrinsic to the target —
+  no weights, no tokenizer, no sample input — because then Phase 5 cannot prove anything.
 
-1. What architecture was detected, with the file and class names that identified it.
-2. Which reference scored highest, and its score on each of the six axes.
-3. The **specific reason it is out of scope** — one of the three families above, an attention-pattern
-   mismatch, or the absence of a runnable forward pass. An advisory-axis mismatch is never the
-   reason; if that is all you have, port at the depth the block supports instead.
-4. Which accelerations, if any, would still be safe to apply by hand — for example, TE `FusedAdam`
+Do **not** use `ARCH_` when a forward pass cannot be run because a dependency failed to install.
+That is failure class `ENV_`: the target has not been judged, and the run may succeed in a clean
+environment. See the "Failure classes" section in `SKILL.md`.
+
+In this case, write the hard-stop variant of `assets/ACCELERATION_REPORT.md.tmpl` and change
+nothing else in the target. It must state:
+
+1. What was detected, with the file and class names (or the absence of any) that led here.
+2. The **specific reason no depth can be attempted** — the model definition could not be located, or
+   no forward pass could be run. An architecture mismatch or advisory-axis mismatch (including
+   attention masking) is never the reason; those go to Depth C instead.
+3. Which accelerations, if any, would still be safe to apply by hand — for example, TE `FusedAdam`
    and `torch.compile` are architecture-agnostic — clearly marked as *not applied and not validated
    by this skill*.
-5. A pointer to the nearest recipe if the user wants to port manually.
+4. A pointer to the nearest recipe if the user wants to port manually.
 
-For the three out-of-scope families, then exit; do not offer to "try anyway".
+Then exit; do not offer to "try anyway".
