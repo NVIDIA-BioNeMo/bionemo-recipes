@@ -13,14 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 import torch
+from megatron.core.packed_seq_params import PackedSeqParams
 
+import bionemo.evo2.models.megatron.hyena.hyena_mixer as hyena_mixer_module
 from bionemo.evo2.models.evo2_provider import HyenaNVTestModelProvider, HyenaTestModelProvider
 from bionemo.evo2.models.megatron.hyena.hyena_config import HyenaConfig
 from bionemo.evo2.models.megatron.hyena.hyena_layer_specs import hyena_stack_spec_no_te
 from bionemo.evo2.models.megatron.hyena.hyena_mixer import (
     HyenaMixer,
+    _packed_cuda_metadata,
+    _packed_sequence_boundaries,
     _pad_padded_dynamic_context_tokens,
     _slice_padded_dynamic_context_tokens,
 )
@@ -88,6 +95,144 @@ def _create_hyena_mixer(
     )
 
 
+def _create_small_packing_mixer(operator_type: str, dtype: torch.dtype = torch.float32) -> HyenaMixer:
+    """Create a small mixer for packed-sequence parity tests."""
+    test_config = HyenaTestModelProvider(
+        hidden_size=64,
+        num_attention_heads=8,
+        ffn_hidden_size=128,
+        num_groups_hyena=64,
+        num_groups_hyena_short=8,
+        num_groups_hyena_medium=8,
+    )
+    test_config.params_dtype = dtype
+    test_config.use_subquadratic_ops = False
+    test_config.finalize()
+
+    hyena_config = HyenaConfig(
+        num_groups_hyena=64,
+        num_groups_hyena_short=8,
+        num_groups_hyena_medium=8,
+        fast_conv_proj=False,
+        fast_conv_mixer=False,
+        hyena_medium_conv_len=16,
+    )
+    submodules = hyena_stack_spec_no_te.submodules.hyena_layer.submodules.mixer.submodules
+    return HyenaMixer(
+        transformer_config=test_config,
+        hyena_config=hyena_config,
+        max_sequence_length=32,
+        submodules=submodules,
+        layer_number=1,
+        operator_type=operator_type,
+    )
+
+
+def _packed_params(lengths: list[int], device: torch.device) -> PackedSeqParams:
+    boundaries = [0]
+    for length in lengths:
+        boundaries.append(boundaries[-1] + length)
+    cu_seqlens = torch.tensor(boundaries, dtype=torch.int32, device=device)
+    return PackedSeqParams(
+        qkv_format="thd",
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_kv=cu_seqlens,
+        max_seqlen_q=max(lengths),
+        max_seqlen_kv=max(lengths),
+    )
+
+
+def _independent_mixer_forward(mixer: HyenaMixer, packed_input: torch.Tensor, lengths: list[int]) -> torch.Tensor:
+    outputs = []
+    start = 0
+    for length in lengths:
+        output, _ = mixer(packed_input[start : start + length], _hyena_use_cp=False)
+        outputs.append(output)
+        start += length
+    return torch.cat(outputs, dim=0)
+
+
+@skip_if_no_gpu
+def test_packed_cuda_metadata_reconstructs_missing_sequence_ids() -> None:
+    """Inference tensors and missing seq_idx must use cached boundary-derived metadata."""
+    with torch.inference_mode():
+        cu_seqlens = torch.tensor([0, 2, 5], dtype=torch.int32, device="cuda")
+        packed_seq_params = SimpleNamespace(
+            cu_seqlens_q_padded=None,
+            cu_seqlens_q=cu_seqlens,
+            max_seqlen_q=3,
+        )
+
+        _, local_positions, sequence_ids, modal_chunks = _packed_cuda_metadata(packed_seq_params, total_tokens=5)
+        _, cached_positions, cached_ids, _ = _packed_cuda_metadata(packed_seq_params, total_tokens=5)
+
+    assert local_positions.tolist() == [0, 1, 0, 1, 2]
+    assert sequence_ids.tolist() == [0, 0, 1, 1, 1]
+    assert cached_positions.data_ptr() == local_positions.data_ptr()
+    assert cached_ids.data_ptr() == sequence_ids.data_ptr()
+    assert modal_chunks is None
+
+
+def test_packed_boundaries_support_inference_tensors() -> None:
+    """The autograd-free packed fallback must not read an unavailable version counter."""
+    with torch.inference_mode():
+        cu_seqlens = torch.tensor([0, 2, 5], dtype=torch.int32)
+        packed_seq_params = SimpleNamespace(
+            qkv_format="thd",
+            cu_seqlens_q_padded=None,
+            cu_seqlens_q=cu_seqlens,
+        )
+
+        assert _packed_sequence_boundaries(packed_seq_params, total_tokens=5) == (0, 2, 5)
+        assert _packed_sequence_boundaries(packed_seq_params, total_tokens=5) == (0, 2, 5)
+
+
+@skip_if_no_gpu
+def test_packed_cuda_metadata_accepts_missing_max_seqlen_q() -> None:
+    """MCore's optional max_seqlen_q must not prevent packed eval."""
+    cu_seqlens = torch.tensor([0, 2, 5], dtype=torch.int32, device="cuda")
+    packed_seq_params = SimpleNamespace(
+        cu_seqlens_q_padded=None,
+        cu_seqlens_q=cu_seqlens,
+        max_seqlen_q=None,
+    )
+
+    _, local_positions, sequence_ids, modal_chunks = _packed_cuda_metadata(packed_seq_params, total_tokens=5)
+
+    assert local_positions.tolist() == [0, 1, 0, 1, 2]
+    assert sequence_ids.tolist() == [0, 0, 1, 1, 1]
+    assert modal_chunks is None
+
+
+@skip_if_no_gpu
+def test_modal_poles_are_cached_until_filter_parameters_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refit must update graph-captured modal tables without replacing their storage."""
+    calls = []
+
+    def build_poles(gamma, poles_parameter):
+        calls.append((gamma, poles_parameter))
+        value = float(len(calls))
+        return hyena_mixer_module.ModalPoles(
+            decay=torch.full(gamma.shape, value, dtype=torch.float32, device=gamma.device),
+            log_decay=torch.full(gamma.shape, -value, dtype=torch.float32, device=gamma.device),
+        )
+
+    monkeypatch.setattr(hyena_mixer_module, "modal_poles", build_poles, raising=False)
+    with distributed_model_parallel_state():
+        mixer = _create_small_packing_mixer("hyena", torch.bfloat16).eval()
+
+        first = mixer._packed_modal_poles()
+        assert mixer._packed_modal_poles() is first
+        with torch.no_grad():
+            mixer.mixer.filter.p.add_(1)
+        refreshed = mixer._packed_modal_poles()
+
+    assert refreshed is first
+    assert refreshed.decay.unique().item() == 2.0
+    assert refreshed.log_decay.unique().item() == -2.0
+    assert len(calls) == 2
+
+
 class _FakeDynamicContext:
     def __init__(self, active_token_count: int, *, static: bool = False):
         self.active_token_count = active_token_count
@@ -95,6 +240,52 @@ class _FakeDynamicContext:
 
     def is_static_batching(self) -> bool:
         return self._static
+
+
+class _FakePackedPrefillContext:
+    def __init__(self, lengths: list[int], device: torch.device):
+        self.paused_request_count = 0
+        self.total_request_count = len(lengths)
+        self.num_prefill_requests = len(lengths)
+        self.active_token_count = sum(lengths)
+        self.request_query_lengths = torch.tensor(lengths, dtype=torch.int32)
+        self._cu_seqlens = _packed_params(lengths, device).cu_seqlens_q
+        self.fir_filter_state_dict = {}
+        self.inner_fir_filter_state_dict = {}
+        self.iir_filter_state_dict = {}
+        self.evo2_batched_decode_enabled = True
+
+    def is_static_batching(self) -> bool:
+        return False
+
+    def get_active_request_count(self) -> int:
+        return self.total_request_count
+
+    def cu_query_lengths(self) -> tuple[torch.Tensor, int]:
+        return self._cu_seqlens, int(self.request_query_lengths.max())
+
+
+class _FakeStaticDecodeContext:
+    def __init__(self):
+        self.fir_filter_state_dict = {}
+        self.inner_fir_filter_state_dict = {}
+        self.iir_filter_state_dict = {}
+
+    def is_static_batching(self) -> bool:
+        return True
+
+
+def test_flat_dynamic_prefill_rejects_empty_scheduler_state() -> None:
+    mixer = MagicMock()
+    mixer._supports_flat_segmented_prefill.return_value = True
+    context = SimpleNamespace(
+        is_static_batching=lambda: False,
+        get_active_request_count=lambda: 0,
+        num_prefill_requests=0,
+        fir_filter_state_dict={},
+    )
+
+    assert not HyenaMixer._supports_flat_dynamic_prefill(mixer, torch.empty(0), context)
 
 
 def test_slice_padded_dynamic_context_tokens_keeps_only_real_rows() -> None:
@@ -128,6 +319,57 @@ def test_pad_padded_dynamic_context_tokens_restores_dummy_width() -> None:
     assert padded.shape == (1, 3, 4)
     torch.testing.assert_close(padded[..., :2], z)
     torch.testing.assert_close(padded[..., 2:], torch.zeros((1, 3, 2)))
+
+
+def test_mixer_propagates_explicit_process_groups_to_all_parallel_components(
+    monkeypatch: pytest.MonkeyPatch,
+    hyena_config: HyenaConfig,
+) -> None:
+    """Custom process-group collections control both sides of Hyena tensor parallelism."""
+    tp_group = MagicMock()
+    tp_group.size.return_value = 1
+    build_kwargs = []
+
+    def record_build_module(_spec, *_args, **kwargs):
+        build_kwargs.append(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(hyena_mixer_module, "build_module", record_build_module)
+    projection_conv = MagicMock()
+    short_operator = MagicMock()
+    monkeypatch.setattr(hyena_mixer_module, "ParallelCausalDepthwiseConv1dWithState", projection_conv)
+    monkeypatch.setattr(hyena_mixer_module, "ParallelShortHyenaOperator", short_operator)
+
+    config = HyenaTestModelProvider()
+    config.finalize()
+    pg_collection = SimpleNamespace(tp=tp_group)
+    HyenaMixer(
+        transformer_config=config,
+        hyena_config=hyena_config,
+        max_sequence_length=512,
+        submodules=SimpleNamespace(dense_projection=object(), dense=object()),
+        operator_type="hyena_short_conv",
+        pg_collection=pg_collection,
+    )
+
+    assert [kwargs.get("tp_group") for kwargs in build_kwargs] == [tp_group, tp_group]
+    assert projection_conv.call_args.kwargs["pg_collection"] is pg_collection
+    assert short_operator.call_args.kwargs["pg_collection"] is pg_collection
+
+
+@skip_if_no_gpu
+def test_mixer_enables_b2b_fusion_with_subquadratic_ops(hyena_config: HyenaConfig) -> None:
+    """The accelerated subquadratic path includes its key projection/mixer fusion."""
+    test_config = HyenaTestModelProvider()
+    test_config.use_subquadratic_ops = True
+    test_config.finalize()
+
+    with distributed_model_parallel_state():
+        hyena_mixer = _create_hyena_mixer(test_config, hyena_config, "hyena_short_conv")
+
+    assert hyena_mixer.use_subquadratic_ops is True
+    assert hasattr(hyena_mixer, "b2b_kernel")
 
 
 @skip_if_no_gpu
@@ -181,7 +423,7 @@ def test_mixer_forward_pass(test_config: HyenaTestModelProvider, hyena_config: H
             )
 
             # Forward pass
-            y, bias = hyena_mixer(input_features, _hyena_use_cp=False)
+            y, _bias = hyena_mixer(input_features, _hyena_use_cp=False)
 
             # Verify output shape
             expected_shape = (seq_len, batch_size, hyena_mixer.hidden_size)
@@ -236,3 +478,405 @@ def test_mixer_state_dict(test_config: HyenaTestModelProvider, hyena_config: Hye
         # Verify parameters match
         for (name1, param1), (name2, param2) in zip(hyena_mixer.named_parameters(), new_mixer.named_parameters()):
             assert torch.allclose(param1, param2), f"Parameter mismatch after loading state dict: {name1}"
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize("packed_operator", ["hyena_short_conv", "hyena_medium_conv", "hyena"])
+@pytest.mark.parametrize(
+    "packed_dtype",
+    [pytest.param(torch.float32, id="fp32"), pytest.param(torch.bfloat16, id="bf16")],
+)
+def test_packed_mixer_matches_independent_forward_and_backward(
+    packed_operator: str,
+    packed_dtype: torch.dtype,
+):
+    """Packed Hyena must equal independent sequences for outputs and every gradient."""
+    lengths = [9, 5, 9]
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(1234)
+        mixer = _create_small_packing_mixer(packed_operator, packed_dtype)
+        packed_input = torch.randn(
+            sum(lengths),
+            1,
+            mixer.input_size,
+            device=device,
+            dtype=packed_dtype,
+            requires_grad=True,
+        )
+        reference_input = packed_input.detach().clone().requires_grad_(True)
+        packed_seq_params = _packed_params(lengths, device)
+
+        packed_output, _ = mixer(
+            packed_input,
+            packed_seq_params=packed_seq_params,
+            _hyena_use_cp=False,
+        )
+        reference_output = _independent_mixer_forward(mixer, reference_input, lengths)
+
+        forward_tolerance = 6e-2 if packed_dtype == torch.bfloat16 and packed_operator == "hyena" else 2e-2
+        if packed_dtype == torch.float32:
+            forward_tolerance = 2e-4
+        torch.testing.assert_close(
+            packed_output,
+            reference_output,
+            rtol=forward_tolerance,
+            atol=forward_tolerance,
+        )
+
+        cotangent = torch.randn_like(packed_output)
+        parameters = [parameter for parameter in mixer.parameters() if parameter.requires_grad]
+        packed_grads = torch.autograd.grad(
+            (packed_output * cotangent).sum(),
+            [packed_input, *parameters],
+            allow_unused=True,
+        )
+        reference_grads = torch.autograd.grad(
+            (reference_output * cotangent).sum(),
+            [reference_input, *parameters],
+            allow_unused=True,
+        )
+
+        for packed_grad, reference_grad in zip(packed_grads, reference_grads):
+            assert (packed_grad is None) == (reference_grad is None)
+            if packed_grad is not None:
+                gradient_tolerance = 8e-2 if packed_dtype == torch.bfloat16 else 5e-4
+                torch.testing.assert_close(
+                    packed_grad,
+                    reference_grad,
+                    rtol=gradient_tolerance,
+                    atol=gradient_tolerance,
+                )
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize("packed_operator", ["hyena_short_conv", "hyena_medium_conv", "hyena"])
+def test_packed_mixer_blocks_boundary_leakage(packed_operator: str):
+    """Changing sequence A cannot affect sequence B outputs or input gradients."""
+    lengths = [11, 7]
+    boundary = lengths[0]
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(5678)
+        mixer = _create_small_packing_mixer(packed_operator)
+        original = torch.randn(sum(lengths), 1, mixer.input_size, device=device)
+        perturbed = original.clone()
+        perturbed[:boundary].add_(torch.randn_like(perturbed[:boundary]))
+        packed_seq_params = _packed_params(lengths, device)
+
+        original.requires_grad_(True)
+        perturbed.requires_grad_(True)
+        original_output, _ = mixer(
+            original,
+            packed_seq_params=packed_seq_params,
+            _hyena_use_cp=False,
+        )
+        perturbed_output, _ = mixer(
+            perturbed,
+            packed_seq_params=packed_seq_params,
+            _hyena_use_cp=False,
+        )
+
+        torch.testing.assert_close(original_output[boundary:], perturbed_output[boundary:], rtol=2e-4, atol=2e-5)
+
+        b_cotangent = torch.randn_like(original_output[boundary:])
+        original_grad = torch.autograd.grad((original_output[boundary:] * b_cotangent).sum(), original)[0]
+        perturbed_grad = torch.autograd.grad((perturbed_output[boundary:] * b_cotangent).sum(), perturbed)[0]
+        torch.testing.assert_close(original_grad[boundary:], perturbed_grad[boundary:], rtol=5e-4, atol=5e-5)
+        torch.testing.assert_close(
+            original_grad[:boundary], torch.zeros_like(original_grad[:boundary]), rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            perturbed_grad[:boundary], torch.zeros_like(perturbed_grad[:boundary]), rtol=0, atol=0
+        )
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize("packed_operator", ["hyena_short_conv", "hyena_medium_conv", "hyena"])
+def test_packed_eval_uses_flat_segmented_prefill(packed_operator: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Packed prediction uses one flat boundary-aware pass, never the padding oracle."""
+    lengths = [13, 3, 8]
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(6789)
+        mixer = _create_small_packing_mixer(packed_operator, torch.bfloat16).eval()
+        packed_input = torch.randn(sum(lengths), 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        packed_seq_params = _packed_params(lengths, device)
+
+        with torch.no_grad():
+            reference_output = _independent_mixer_forward(mixer, packed_input, lengths)
+
+        def fail_padding_oracle(*_args, **_kwargs):
+            raise AssertionError("packed eval unexpectedly selected the padding oracle")
+
+        monkeypatch.setattr(mixer, "_mix_packed_projected_features", fail_padding_oracle)
+        with torch.no_grad():
+            packed_output, _ = mixer(
+                packed_input,
+                packed_seq_params=packed_seq_params,
+                _hyena_use_cp=False,
+            )
+
+        tolerance = 5e-2 if packed_operator == "hyena" else 2e-2
+        torch.testing.assert_close(packed_output, reference_output, rtol=tolerance, atol=tolerance)
+
+
+@skip_if_no_gpu
+def test_non_order_16_modal_prefill_falls_back_from_flat_kernel() -> None:
+    """Unsupported modal orders must select the safe existing-operator fallback."""
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        mixer = _create_small_packing_mixer("hyena", torch.bfloat16).eval()
+        mixer.hyena_config.hyena_filter_order = 8
+        projection = torch.empty(
+            3,
+            1,
+            3 * mixer.hidden_size_per_partition,
+            device=device,
+            dtype=torch.bfloat16,
+        )
+
+        with torch.no_grad():
+            assert not mixer._supports_flat_segmented_prefill(projection)
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize("packed_operator", ["hyena_short_conv", "hyena_medium_conv", "hyena"])
+def test_dynamic_ragged_prefill_matches_independent_and_seeds_decode_state(packed_operator: str) -> None:
+    """Infer prefill consumes native ragged boundaries and emits one state row per request."""
+    lengths = [12, 3, 7]
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(7890)
+        mixer = _create_small_packing_mixer(packed_operator, torch.bfloat16).eval()
+        packed_input = torch.randn(sum(lengths), 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        context = _FakePackedPrefillContext(lengths, device)
+
+        with torch.no_grad():
+            reference_output = _independent_mixer_forward(mixer, packed_input, lengths)
+            actual_output, _ = mixer(
+                packed_input,
+                inference_context=context,
+                _hyena_use_cp=False,
+            )
+
+        tolerance = 5e-2 if packed_operator == "hyena" else 2e-2
+        torch.testing.assert_close(actual_output, reference_output, rtol=tolerance, atol=tolerance)
+        projection_state = context.fir_filter_state_dict[id(mixer.hyena_proj_conv)]
+        assert projection_state.shape == (
+            len(lengths),
+            3 * mixer.hidden_size_per_partition,
+            mixer.hyena_proj_conv.kernel_size - 1,
+        )
+        if packed_operator == "hyena_short_conv":
+            mixer_state = context.fir_filter_state_dict[id(mixer.mixer.short_conv)]
+            expected_shape = (
+                len(lengths),
+                mixer.hidden_size_per_partition,
+                mixer.mixer.short_conv.kernel_size - 1,
+            )
+        elif packed_operator == "hyena_medium_conv":
+            mixer_state = context.inner_fir_filter_state_dict[id(mixer.mixer)]
+            expected_shape = (
+                len(lengths),
+                mixer.hidden_size_per_partition,
+                mixer.mixer.kernel_size - 1,
+            )
+        else:
+            mixer_state = context.iir_filter_state_dict[id(mixer.mixer)]
+            expected_shape = (
+                len(lengths),
+                mixer.hidden_size_per_partition,
+                mixer.hyena_config.hyena_filter_order,
+            )
+        assert mixer_state.shape == expected_shape
+        assert mixer_state.dtype == torch.float32
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize("packed_operator", ["hyena_short_conv", "hyena_medium_conv", "hyena"])
+def test_dynamic_ragged_prefill_state_continues_exact_batched_decode(packed_operator: str) -> None:
+    """States emitted by packed prefill reproduce each request's next-token output."""
+    lengths = [10, 3, 6]
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(8901)
+        mixer = _create_small_packing_mixer(packed_operator, torch.bfloat16).eval()
+        packed_input = torch.randn(sum(lengths), 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        next_input = torch.randn(len(lengths), 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        context = _FakePackedPrefillContext(lengths, device)
+
+        with torch.no_grad():
+            mixer(packed_input, inference_context=context, _hyena_use_cp=False)
+            context.num_prefill_requests = 0
+            context.active_token_count = len(lengths)
+            context.request_query_lengths = torch.ones(len(lengths), dtype=torch.int32)
+            decode_output, _ = mixer(next_input, inference_context=context, _hyena_use_cp=False)
+
+            independent_decode_segments = []
+            start = 0
+            for request_index, length in enumerate(lengths):
+                independent_context = _FakePackedPrefillContext([length], device)
+                mixer(
+                    packed_input[start : start + length],
+                    inference_context=independent_context,
+                    _hyena_use_cp=False,
+                )
+                independent_context.num_prefill_requests = 0
+                independent_context.active_token_count = 1
+                independent_context.request_query_lengths = torch.ones(1, dtype=torch.int32)
+                independent_decode, _ = mixer(
+                    next_input[request_index : request_index + 1],
+                    inference_context=independent_context,
+                    _hyena_use_cp=False,
+                )
+                independent_decode_segments.append(independent_decode)
+                start += length
+            independent_decode_output = torch.cat(independent_decode_segments)
+
+            reference_segments = []
+            start = 0
+            for request_index, length in enumerate(lengths):
+                full_sequence = torch.cat(
+                    [packed_input[start : start + length], next_input[request_index : request_index + 1]],
+                    dim=0,
+                )
+                full_output, _ = mixer(full_sequence, _hyena_use_cp=False)
+                reference_segments.append(full_output[-1:])
+                start += length
+            reference_output = torch.cat(reference_segments)
+
+        # This isolates batched state handoff from any modal-vs-FFT numerical drift.
+        torch.testing.assert_close(decode_output, independent_decode_output, rtol=2e-3, atol=2e-3)
+
+        # Long Hyena compares the order-16 BF16 modal recurrence against the legacy
+        # FFT full forward here. Their accumulation order differs; the emitted fp32
+        # modal state itself is checked to 2e-4 in test_packed_kernels.py.
+        cross_algorithm_tolerance = 6e-2 if packed_operator == "hyena" else 3e-2
+        torch.testing.assert_close(
+            decode_output,
+            reference_output,
+            rtol=cross_algorithm_tolerance,
+            atol=cross_algorithm_tolerance,
+        )
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize(
+    ("packed_operator", "kernel_operator"),
+    [("hyena_short_conv", "short"), ("hyena_medium_conv", "medium"), ("hyena", "modal")],
+)
+def test_dynamic_single_token_decode_selects_fused_kernel(
+    packed_operator: str,
+    kernel_operator: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stateful ragged decode step uses the single-launch Hyena recurrence."""
+    lengths = [8, 3, 5]
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(9012)
+        mixer = _create_small_packing_mixer(packed_operator, torch.bfloat16).eval()
+        packed_input = torch.randn(sum(lengths), 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        next_input = torch.randn(len(lengths), 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        context = _FakePackedPrefillContext(lengths, device)
+
+        with torch.no_grad():
+            mixer(packed_input, inference_context=context, _hyena_use_cp=False)
+
+        calls = []
+        original = hyena_mixer_module.fused_hyena_decode_from_projection
+
+        def record_call(*args, **kwargs):
+            calls.append(kwargs["operator"])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(hyena_mixer_module, "fused_hyena_decode_from_projection", record_call)
+        context.num_prefill_requests = 0
+        context.active_token_count = len(lengths)
+        context.request_query_lengths = torch.ones(len(lengths), dtype=torch.int32)
+        with torch.no_grad():
+            mixer(next_input, inference_context=context, _hyena_use_cp=False)
+
+        assert calls == [kernel_operator]
+
+
+@skip_if_no_gpu
+@pytest.mark.parametrize(
+    ("packed_operator", "kernel_operator"),
+    [("hyena_short_conv", "short"), ("hyena_medium_conv", "medium"), ("hyena", "modal")],
+)
+def test_static_single_token_decode_selects_fused_kernel(
+    packed_operator: str,
+    kernel_operator: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Static FlashAttention decode also uses the fused Hyena recurrence."""
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(9013)
+        mixer = _create_small_packing_mixer(packed_operator, torch.bfloat16).eval()
+        # Cover the complete medium FIR ring. Short prefills are right-padded by
+        # the persistent static-state binding exercised separately.
+        prefill_input = torch.randn(16, 2, mixer.input_size, device=device, dtype=torch.bfloat16)
+        next_input = torch.randn(1, 2, mixer.input_size, device=device, dtype=torch.bfloat16)
+        context = _FakeStaticDecodeContext()
+
+        with torch.no_grad():
+            mixer(prefill_input, inference_context=context, _hyena_use_cp=False)
+
+        calls = []
+        original = hyena_mixer_module.fused_hyena_decode_from_projection
+
+        def record_call(*args, **kwargs):
+            calls.append(kwargs["operator"])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(hyena_mixer_module, "fused_hyena_decode_from_projection", record_call)
+        with torch.no_grad():
+            mixer(next_input, inference_context=context, _hyena_use_cp=False)
+
+        assert calls == [kernel_operator]
+
+
+@skip_if_no_gpu
+def test_static_decode_falls_back_while_medium_fir_history_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial eager FIR seed must grow through the existing step path before fusion."""
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    with distributed_model_parallel_state():
+        torch.manual_seed(9014)
+        mixer = _create_small_packing_mixer("hyena_medium_conv", torch.bfloat16).eval()
+        prefill_input = torch.randn(3, 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        next_input = torch.randn(1, 1, mixer.input_size, device=device, dtype=torch.bfloat16)
+        context = _FakeStaticDecodeContext()
+
+        with torch.no_grad():
+            mixer(prefill_input, inference_context=context, _hyena_use_cp=False)
+        assert context.inner_fir_filter_state_dict[id(mixer.mixer)].shape[-1] == 3
+
+        fused_calls = []
+        original = hyena_mixer_module.fused_hyena_decode_from_projection
+
+        def record_call(*args, **kwargs):
+            fused_calls.append(kwargs["operator"])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(hyena_mixer_module, "fused_hyena_decode_from_projection", record_call)
+        with torch.no_grad():
+            decode_output, _ = mixer(next_input, inference_context=context, _hyena_use_cp=False)
+            reference_output, _ = mixer(torch.cat((prefill_input, next_input)), _hyena_use_cp=False)
+
+        assert fused_calls == []
+        assert context.inner_fir_filter_state_dict[id(mixer.mixer)].shape[-1] == 4
+        torch.testing.assert_close(decode_output, reference_output[-1:], rtol=3e-2, atol=3e-2)

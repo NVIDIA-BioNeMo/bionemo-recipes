@@ -290,6 +290,10 @@ def _check_matchrate(*, ckpt_name, matchrate, assert_matchrate=True):
             True,
             True,
             id="1b-8k-bf16-subquadratic-ops-flash",
+            marks=pytest.mark.skipif(
+                bool(os.environ.get("CI")),
+                reason="L4 falls back from FA4, duplicating the retained subquadratic full-model forward",
+            ),
         ),
         pytest.param(
             "evo2/1b-8k:1.0",
@@ -996,6 +1000,10 @@ def _run_subq_mbridge_test_subprocess(tmp_path: Path) -> None:
 
 @pytest.mark.timeout(900)
 @pytest.mark.slow
+@pytest.mark.skipif(
+    bool(os.environ.get("CI")),
+    reason="Focused mixer tests cover subquadratic forward/backward parity in CI",
+)
 def test_batch_generate_mbridge_subquadratic_ops(tmp_path: Path):
     """Run subquadratic MBridge generation coverage in an isolated pytest subprocess."""
     if os.environ.get(_RUN_SUBQ_MBRIDGE_INPROCESS_ENV) != "1":
@@ -1005,14 +1013,14 @@ def test_batch_generate_mbridge_subquadratic_ops(tmp_path: Path):
 
 
 def _run_batch_generate_mbridge_subquadratic_ops(sequences: list[str], tmp_path: Path):
-    """Second-half match accuracy through the dynamic engine with the fused subquadratic-ops kernels.
+    """Second-half match accuracy through static-Flash with subquadratic prefill kernels.
 
     Mirrors :func:`test_batch_generate_mbridge` (1b-bf16, greedy) but enables ``use_subquadratic_ops``
     so the b2b causal-conv1d prefill and fft/causal-conv1d FIR kernels are exercised end-to-end on the
-    native dynamic decode path. Because subquadratic-ops kernels cannot be captured into a CUDA graph,
-    ``setup_inference_engine`` forces ``cuda_graph_impl='none'`` (eager decode) when they are enabled.
-    This gives accuracy coverage for the subquadratic-ops path through the dynamic engine, not just the
-    default conv path. It xfails on hardware where the
+    rectangular static-Flash path. Because a decode fallback could reach a subquadratic kernel,
+    ``setup_inference_engine`` forces ``cuda_graph_impl='none'`` for this opt-in combination.
+    Dynamic inference deliberately ignores the flag and is covered by its segmented kernels instead.
+    This test xfails on hardware where the
     prebuilt subquadratic kernels fail their CUDA self-test (unsupported PTX/toolchain), matching the
     other subquadratic tests in this recipe.
     """
@@ -1056,7 +1064,8 @@ def _run_batch_generate_mbridge_subquadratic_ops(sequences: list[str], tmp_path:
         prompts = [split[0] for split in seq_splits]
         targets = [split[1] for split in seq_splits]
 
-        # use_subquadratic_ops=True routes prefill/FIR through the fused subquadratic kernels.
+        # use_subquadratic_ops=True routes prefill/FIR through the accelerated
+        # FFT/causal kernels, including the projection/mixer B2B fusion.
         components = setup_inference_engine(
             ckpt_dir=mbridge_ckpt_path,
             max_seq_length=8192,
@@ -1064,6 +1073,7 @@ def _run_batch_generate_mbridge_subquadratic_ops(sequences: list[str], tmp_path:
             tensor_parallel_size=1,
             random_seed=42,
             use_subquadratic_ops=True,
+            inference_backend="static-flash",
         )
         results = generate(
             components,
@@ -1071,6 +1081,7 @@ def _run_batch_generate_mbridge_subquadratic_ops(sequences: list[str], tmp_path:
             max_new_tokens=num_tokens_to_generate,
             temperature=1.0,
             top_k=1,  # Greedy for determinism
+            inference_backend="static-flash",
         )
 
         match_percents = [

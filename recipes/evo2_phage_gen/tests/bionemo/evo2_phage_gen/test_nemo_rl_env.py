@@ -119,14 +119,32 @@ def test_extract_assistant_sequence_concatenates_assistant_messages():
     assert extract_assistant_sequence(message_log) == "ACGTTGCA"
 
 
-def test_extract_scored_sequence_keeps_prompt_dna_and_drops_soft_tokens():
-    """QC should include the nucleotide prompt but not fine-tuning soft tokens."""
+def test_extract_scored_sequence_keeps_prompt_dna_and_trims_terminal_eos():
+    """QC should drop prompt soft tokens and the generated terminal action."""
     message_log = [
         {"role": "user", "content": "+~GAGT"},
-        {"role": "assistant", "content": "ACGT"},
+        {"role": "assistant", "content": "ACGT<EOS>NOT_DNA"},
     ]
 
     assert extract_scored_sequence(message_log) == "GAGTACGT"
+
+
+def test_score_message_logs_sends_only_pre_eos_dna_to_qc(monkeypatch):
+    """Terminal EOS remains an RL action but must not enter biological scoring."""
+    captured = {}
+
+    def _capture_sequences(sequences_df, **_kwargs):
+        captured["sequences"] = sequences_df.copy()
+        return sequences_df
+
+    monkeypatch.setattr(nemo_rl_env, "score_nucleotide_metrics", _capture_sequences)
+
+    scored = score_message_logs(
+        [[{"role": "user", "content": "+~GAGT"}, {"role": "assistant", "content": "ACGT<EOD>junk"}]]
+    )
+
+    assert captured["sequences"]["sequence"].tolist() == ["GAGTACGT"]
+    assert scored["sequence"].tolist() == ["GAGTACGT"]
 
 
 def test_score_message_logs_without_safety_config_returns_zero_reward():
@@ -957,12 +975,14 @@ def test_scored_records_exclude_full_sequence_from_rollout_metadata():
             "safety_nested_payload": [{"state": "PASS"}],
             "safety_list_payload": [["PASS"]],
             "safety_unbounded_payload": ["x" * 4097],
-            "safety_invalid_unicode": ["\ud800"],
             "reward_nonfinite": [float("inf")],
             "reward_nan": [float("nan")],
             "reward_complex": [1 + 2j],
         }
     )
+    # pandas 3 rejects lone surrogates in its inferred str dtype, so add the
+    # invalid-unicode probe as an object-dtype column after construction.
+    scored["safety_invalid_unicode"] = pd.Series(["\ud800"], dtype=object)
 
     records = _scored_records(scored)
 

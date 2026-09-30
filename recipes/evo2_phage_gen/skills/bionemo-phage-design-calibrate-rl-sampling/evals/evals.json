@@ -9,7 +9,7 @@
         "The response reconstructs the SFT conditioning, orientation, wrappers, BOS/EOS, padding, masking, tokenization, and continuation boundary.",
         "It uses only cues present during SFT and does not copy the paper format when the selected checkpoint differs.",
         "It sweeps a reasonable temperature and prefix range with paired seeds and enough samples to compare uncertainty.",
-        "It materializes the selected prompt mixture and sampling settings in the eventual commands.",
+        "It materializes the selected prompt mixture and sampling settings in the eventual commands and treats simultaneous nonzero top-k/top-p as temperature, then top-k, then top-p.",
         "Calibration samples remain separate from RL validation and final rollout."
       ],
       "expected_skill": "bionemo-phage-design-calibrate-rl-sampling",
@@ -23,7 +23,7 @@
         "The response compares raw and cluster-deduplicated QC yield, target evidence, copying, diversity, and uncertainty.",
         "It rejects a high-yield cell when the gain is mainly reference copying.",
         "It prefers a stable plateau and temperature 1.0 when practically equivalent.",
-        "It keeps multiple prompt strata only when they improve the frontier and fit the deployed batch shape.",
+        "It keeps multiple prompt strata only when they improve the frontier and does not require their count to divide the microbatch or GPU count because packed dynamic prefill supports mixed lengths.",
         "It records the selected settings and rationale."
       ],
       "expected_skill": "bionemo-phage-design-calibrate-rl-sampling",

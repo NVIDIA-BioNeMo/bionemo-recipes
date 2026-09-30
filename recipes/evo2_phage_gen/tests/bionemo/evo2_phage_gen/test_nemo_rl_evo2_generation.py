@@ -16,6 +16,7 @@
 import json
 import logging
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -25,6 +26,8 @@ from nemo_rl.models.generation.megatron.megatron_generation import (
     _adapter_requires_all_workers,
     _load_generation_adapter,
 )
+from nemo_rl.models.generation.megatron.megatron_worker import MegatronGenerationMixin
+from nemo_rl.models.policy.workers.megatron_policy_worker import MegatronPolicyWorkerImpl
 
 import bionemo.evo2_phage_gen.nemo_rl_evo2_generation as evo2_generation
 from bionemo.evo2_phage_gen.nemo_rl_evo2_generation import (
@@ -352,6 +355,29 @@ def test_evo2_native_generation_reseeds_cached_sampling_rng_for_each_adapter_cal
     assert native_dynamic.sampling_rng is None
 
 
+@pytest.mark.parametrize(("precision", "prepared"), [("fp8", True), ("fp4", True), ("bf16", False)])
+def test_quantized_rollout_prepares_rows_outside_inference_mode(monkeypatch, precision, prepared):
+    calls = []
+
+    def prepare(model, config):
+        calls.append((model, config, torch.is_inference_mode_enabled()))
+        return True
+
+    monkeypatch.setattr("bionemo.evo2.run.low_precision.prepare_model_for_quantized_inference", prepare)
+    config = SimpleNamespace(
+        fp8="e4m3" if precision == "fp8" else None,
+        fp4="nvfp4" if precision == "fp4" else None,
+    )
+    model = SimpleNamespace(config=config)
+
+    with torch.inference_mode():
+        evo2_generation._prepare_evo2_quantized_inference(model)
+
+    assert bool(calls) is prepared
+    if prepared:
+        assert calls == [(model, config, False)]
+
+
 @pytest.mark.parametrize(
     ("configured_size", "tensor_parallel_size", "expected_size"),
     [(48, 1, 48), (48, 2, 48), (48, 5, 50), (96, 7, 98), (96, 8, 96)],
@@ -451,6 +477,210 @@ def test_evo2_adapter_emits_replicated_batched_data_from_every_model_parallel_ra
         adapter.generate_worker(worker, data=data, greedy=False)
 
 
+def test_finish_generation_keeps_native_engine_across_rollout_cycles(monkeypatch):
+    adapter = Evo2MegatronGenerationAdapter({"seed": 17})
+    assert adapter.bypasses_persistent_mcore_engine is True
+    context = SimpleNamespace(reset_count=0)
+    context.reset = lambda: setattr(context, "reset_count", context.reset_count + 1)
+    model = SimpleNamespace()
+    native_dynamic = SimpleNamespace(
+        forward_model=model,
+        shared_dyn_ctx=context,
+        evo2_seed=0,
+        sampling_rng=None,
+    )
+    worker = SimpleNamespace(
+        cfg={
+            "megatron_cfg": {"tensor_model_parallel_size": 1},
+            "generation": {
+                "mcore_generation_config": {
+                    "max_model_len": 64,
+                    "cuda_graph_impl": "local",
+                    "prompt_batch_size": 2,
+                }
+            },
+        },
+        model=model,
+        megatron_tokenizer=_Tokenizer(),
+        _evo2_native_dynamic_components=native_dynamic,
+    )
+    prompt_tokens = torch.tensor([[11], [21]])
+    prompt_lengths = torch.tensor([1, 1])
+    sampling_params = [SimpleNamespace(num_tokens_to_generate=1)] * 2
+
+    def _fake_generate(_components, prompts, **_kwargs):
+        return [
+            SimpleNamespace(
+                prompt_tokens=[token_id],
+                generated_tokens=[65],
+                generated_log_probs=[-0.1],
+                finish_reason="length",
+                stopped_on_eos=False,
+                truncated=True,
+                timings={},
+                memory={},
+            )
+            for token_id, _prompt in zip((11, 21), prompts, strict=True)
+        ]
+
+    monkeypatch.setattr("bionemo.evo2.run.infer.generate", _fake_generate)
+    monkeypatch.setattr(
+        "bionemo.evo2.run.infer._setup_native_dynamic_components",
+        lambda **_kwargs: pytest.fail("the second rollout rebuilt the native engine"),
+    )
+
+    for _ in range(2):
+        results = evo2_generation.generate_evo2_native_batched(
+            worker,
+            prompt_tokens,
+            prompt_lengths,
+            sampling_params,
+        )
+        assert [result.generated_tokens for result in results] == [[65], [65]]
+        adapter.finish_worker(worker)
+
+    assert worker._evo2_native_dynamic_components is native_dynamic
+    assert context.reset_count == 2
+
+
+def test_nemo_worker_bypasses_generic_engine_for_evo2_adapter(monkeypatch):
+    from nemo_rl.models.generation.megatron import megatron_worker
+
+    adapter = SimpleNamespace(
+        bypasses_persistent_mcore_engine=True,
+        finish_worker=Mock(),
+    )
+    model = SimpleNamespace(
+        config=SimpleNamespace(flash_decode=True),
+        eval=Mock(),
+        rotary_pos_emb=None,
+    )
+    worker = MegatronGenerationMixin()
+    worker.rank = 0
+    worker.model = model
+    worker.cfg = {
+        "generation": {"mcore_generation_config": {"cuda_graph_impl": "local"}},
+    }
+    worker.is_generation_colocated = True
+    worker.should_disable_forward_pre_hook = False
+    worker._inference_engine_initialized = True
+    worker._inference_engine_asleep = False
+    worker._load_generation_adapter = lambda: adapter
+    worker._sleep = Mock()
+    worker._initialize_inference_engine = Mock()
+    worker._run_async_coordinator_start = Mock()
+    worker._wake = Mock()
+    graph_toggles = []
+
+    monkeypatch.setattr(megatron_worker, "unwrap_model", lambda value: value)
+    monkeypatch.setattr(megatron_worker, "log_gpu_memory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(megatron_worker, "toggle_cuda_graphs", lambda _model, *, set_to: graph_toggles.append(set_to))
+    monkeypatch.setattr(megatron_worker.gc, "collect", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    worker.prepare_for_generation()
+    worker.finish_generation()
+
+    assert model.config.flash_decode is False
+    model.eval.assert_called_once_with()
+    assert graph_toggles == ["local", "none"]
+    worker._sleep.assert_not_called()
+    worker._initialize_inference_engine.assert_not_called()
+    worker._run_async_coordinator_start.assert_not_called()
+    worker._wake.assert_not_called()
+    adapter.finish_worker.assert_called_once_with(worker)
+
+
+def test_graph_adapter_preserves_captured_model_storage():
+    adapter = Evo2MegatronGenerationAdapter({"seed": 17})
+    worker = SimpleNamespace(
+        _evo2_native_dynamic_components=None,
+        _load_generation_adapter=lambda: adapter,
+    )
+    assert not adapter.requires_persistent_model_storage(worker)
+
+    worker._evo2_native_dynamic_components = SimpleNamespace(
+        cuda_graphs_enabled=True,
+        shared_dyn_ctx=object(),
+        cuda_graph_replay_verified=False,
+        static_contexts={},
+    )
+    assert not adapter.requires_persistent_model_storage(worker)
+
+    worker._evo2_native_dynamic_components.cuda_graph_replay_verified = True
+    assert adapter.requires_persistent_model_storage(worker)
+    assert MegatronGenerationMixin._generation_adapter_requires_persistent_model_storage(worker)
+
+    worker._evo2_native_dynamic_components.shared_dyn_ctx = None
+    worker._evo2_native_dynamic_components.cuda_graph_replay_verified = False
+    worker._evo2_native_dynamic_components.static_contexts = {
+        (2, 64): SimpleNamespace(evo2_static_cuda_graph_replay_verified=False)
+    }
+    assert not adapter.requires_persistent_model_storage(worker)
+
+    static_context = worker._evo2_native_dynamic_components.static_contexts[(2, 64)]
+    static_context.evo2_static_cuda_graph_replay_verified = True
+    assert adapter.requires_persistent_model_storage(worker)
+
+    worker._evo2_native_dynamic_components.cuda_graphs_enabled = False
+    assert not adapter.requires_persistent_model_storage(worker)
+
+
+@pytest.mark.parametrize(
+    ("precision_kind", "vortex_style_fp8", "expected"),
+    [
+        ("bf16", False, False),
+        ("fp8", False, True),
+        ("fp8-all-layers", False, True),
+        ("mxfp8", False, True),
+        ("nvfp4", False, True),
+        ("bf16", True, True),
+    ],
+)
+def test_graph_adapter_recaptures_quantized_graphs_after_refit(precision_kind, vortex_style_fp8, expected):
+    adapter = Evo2MegatronGenerationAdapter({"seed": 17})
+    native_dynamic = SimpleNamespace(
+        cuda_graphs_enabled=True,
+        shared_dyn_ctx=object(),
+        cuda_graph_replay_verified=True,
+        static_contexts={},
+        precision_kind=precision_kind,
+        hyena_model=SimpleNamespace(config=SimpleNamespace(vortex_style_fp8=vortex_style_fp8)),
+        cuda_graph_force_recapture=False,
+    )
+    worker = SimpleNamespace(_evo2_native_dynamic_components=native_dynamic)
+
+    assert adapter.model_refit_complete(worker) is expected
+    assert native_dynamic.cuda_graph_force_recapture is expected
+
+
+@pytest.mark.parametrize(("storage_required", "expected_move_params"), [(False, True), (True, False)])
+def test_refit_offload_respects_graph_storage(monkeypatch, storage_required, expected_move_params):
+    calls = []
+    model = SimpleNamespace(eval=lambda: calls.append(("eval",)))
+    worker = SimpleNamespace(
+        model=model,
+        _generation_adapter_requires_persistent_model_storage=lambda: storage_required,
+        move_model=lambda moved_model, device, **kwargs: (
+            calls.append(("move", moved_model, device, kwargs)) or moved_model
+        ),
+        offload_before_refit=lambda: calls.append(("offload-before-refit",)),
+        _generation_adapter_model_refit_complete=lambda: calls.append(("refit-complete",)),
+    )
+    monkeypatch.setattr(torch.cuda.nvtx, "range_push", lambda _name: None)
+    monkeypatch.setattr(torch.cuda.nvtx, "range_pop", lambda: None)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda: 0)
+    monkeypatch.setattr(torch, "randn", lambda *_args, **_kwargs: SimpleNamespace(cuda=lambda: None))
+
+    MegatronPolicyWorkerImpl.offload_after_refit(worker)
+
+    move_call = calls[0]
+    assert move_call[:3] == ("move", model, "cpu")
+    assert move_call[3]["move_params"] is expected_move_params
+    assert calls[1:] == [("eval",), ("offload-before-refit",), ("refit-complete",)]
+
+
 def test_evo2_adapter_aggregates_cold_and_multi_group_timings_by_stable_group_id(monkeypatch):
     adapter = Evo2MegatronGenerationAdapter({"seed": 17})
     prompt_tokens = torch.tensor([[11, 12], [21, 22], [31, 32], [41, 42]])
@@ -460,6 +690,7 @@ def test_evo2_adapter_aggregates_cold_and_multi_group_timings_by_stable_group_id
         "timing_scope": "native_generation_group",
         "timing_group_id": "native-call-00000000-group-00000000",
         "timing_request_count": 2,
+        "phase_timing_exact": True,
         "engine_setup_elapsed_s": 1.0,
         "context_setup_elapsed_s": 2.0,
         "cuda_graph_capture_elapsed_s": 3.0,
@@ -472,6 +703,7 @@ def test_evo2_adapter_aggregates_cold_and_multi_group_timings_by_stable_group_id
         "timing_scope": "native_generation_group",
         "timing_group_id": "native-call-00000000-group-00000002",
         "timing_request_count": 2,
+        "phase_timing_exact": True,
         "engine_setup_elapsed_s": 0.0,
         "context_setup_elapsed_s": 0.0,
         "cuda_graph_capture_elapsed_s": 0.0,
@@ -554,6 +786,11 @@ def test_evo2_adapter_aggregates_cold_and_multi_group_timings_by_stable_group_id
     assert timing["timing/train/generation/evo2_decode_elapsed_s"] == 12.0
     assert timing["timing/train/generation/evo2_generation_elapsed_s"] == 22.0
     assert timing["timing/train/generation/evo2_total_elapsed_s"] == 28.0
+    assert timing["timing/train/generation/evo2_phase_timing_exact"] == 1.0
+    assert timing["timing/train/generation/evo2_generation_completion_tokens"] == 8.0
+    assert timing["timing/train/generation/evo2_decode_completion_tokens"] == 4.0
+    assert timing["timing/train/generation/evo2_generation_completion_tokens_per_s"] == pytest.approx(8 / 22)
+    assert timing["timing/train/generation/evo2_decode_completion_tokens_per_s"] == pytest.approx(4 / 12)
     expected_memory_metrics = {
         "engine_setup_peak_allocated_bytes": 100,
         "engine_setup_peak_reserved_bytes": 110,
@@ -574,10 +811,12 @@ def test_evo2_adapter_aggregates_cold_and_multi_group_timings_by_stable_group_id
         assert timing[f"memory/train/generation/evo2_{metric_name}"] == expected_value
 
 
-def test_evo2_adapter_forwards_exact_generation_controls(monkeypatch):
-    adapter = Evo2MegatronGenerationAdapter({"ignore_eos": True, "strict_generation": True})
-    prompt_tokens = torch.tensor([[11, 12], [21, 22]])
-    prompt_lengths = torch.tensor([2, 2])
+def test_evo2_adapter_forwards_generation_controls(monkeypatch):
+    adapter = Evo2MegatronGenerationAdapter(
+        {"ignore_eos": True, "preserve_eos_token": True, "strict_generation": True}
+    )
+    prompt_tokens = torch.tensor([[11, 0], [21, 22]])
+    prompt_lengths = torch.tensor([1, 2])
     sampling_params = [SimpleNamespace(num_tokens_to_generate=2)] * 2
     forwarded = {}
 
@@ -604,13 +843,17 @@ def test_evo2_adapter_forwards_exact_generation_controls(monkeypatch):
         _parse_result_to_batched_data_dict=lambda _data, result: result,
     )
 
-    def _fake_generate_native_dynamic(*args, **kwargs):
+    def _fake_generate(*args, **kwargs):
         forwarded.update(kwargs)
+        components, prompts = args
+        forwarded["prompt_token_ids"] = [components.tokenizer.tokenize(prompt) for prompt in prompts]
         return [
             SimpleNamespace(
-                prompt_tokens=prompt_tokens[idx].tolist(),
-                generated_tokens=[65, 67],
+                prompt_tokens=prompt_tokens[idx, : prompt_lengths[idx]].tolist(),
+                generated_tokens=[65, 0],
                 generated_log_probs=[-0.1, -0.2],
+                finish_reason="stop",
+                stopped_on_eos=True,
                 memory={
                     "generation_peak_allocated_bytes": 123,
                     "generation_peak_reserved_bytes": 456,
@@ -619,17 +862,84 @@ def test_evo2_adapter_forwards_exact_generation_controls(monkeypatch):
             for idx in range(2)
         ]
 
-    monkeypatch.setattr("bionemo.evo2.run.infer._generate_native_dynamic", _fake_generate_native_dynamic)
+    monkeypatch.setattr("bionemo.evo2.run.infer.generate", _fake_generate)
 
     results = adapter.generate_worker(worker, data=SimpleNamespace(size=2))
 
     assert len(results) == 2
+    assert worker._evo2_native_dynamic_components.use_torch_inference_mode is False
     assert forwarded["ignore_eos"] is True
+    assert forwarded["preserve_eos_token"] is True
     assert forwarded["strict_generation"] is True
+    assert forwarded["inference_backend"] == "dynamic"
+    assert forwarded["evo2_batched_decode_size"] == 2
+    assert forwarded["prompt_token_ids"] == [[11], [21, 22]]
+    assert results[0].generated_tokens == [65, 0]
+    assert results[0].generated_log_probs == [-0.1, -0.2]
+    assert results[0].stopped_on_eos is True
     assert results[0].memory == {
         "generation_peak_allocated_bytes": 123,
         "generation_peak_reserved_bytes": 456,
     }
+
+
+@pytest.mark.parametrize(
+    ("fp8", "fp4", "expected_scope"),
+    [
+        (None, None, "block"),
+        ("hybrid", None, "layer"),
+        (None, "nvfp4", "layer"),
+    ],
+)
+def test_adapter_resolves_quantized_graph_scope_before_setup(monkeypatch, fp8, fp4, expected_scope):
+    prompt_tokens = torch.tensor([[11, 12], [21, 22]])
+    prompt_lengths = torch.tensor([2, 2])
+    sampling_params = [SimpleNamespace(num_tokens_to_generate=2, top_k=5, top_p=0.999)] * 2
+    setup_kwargs = {}
+    native_dynamic = SimpleNamespace(forward_model=object(), evo2_seed=0, sampling_rng=None)
+    worker = SimpleNamespace(
+        cfg={
+            "generation": {
+                "mcore_generation_config": {
+                    "max_model_len": 5632,
+                    "prompt_batch_size": 2,
+                    "cuda_graph_impl": "local",
+                    "inference_cuda_graph_scope": "block",
+                }
+            }
+        },
+        model=SimpleNamespace(
+            config=SimpleNamespace(fp8=fp8, fp4=fp4),
+            decoder=SimpleNamespace(hyena_state_shapes_per_request=lambda: None),
+        ),
+        megatron_tokenizer=_Tokenizer(),
+    )
+
+    def fake_setup(**kwargs):
+        setup_kwargs.update(kwargs)
+        return native_dynamic
+
+    monkeypatch.setattr(evo2_generation, "_prepare_evo2_quantized_inference", lambda _model: None)
+    monkeypatch.setattr("bionemo.evo2.run.infer._setup_native_dynamic_components", fake_setup)
+    monkeypatch.setattr(
+        "bionemo.evo2.run.infer.generate",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                prompt_tokens=prompt_tokens[index, : prompt_lengths[index]].tolist(),
+                generated_tokens=[65],
+                generated_log_probs=[-0.1],
+                finish_reason="length",
+                stopped_on_eos=False,
+                memory={},
+            )
+            for index in range(2)
+        ],
+    )
+
+    evo2_generation.generate_evo2_native_batched(worker, prompt_tokens, prompt_lengths, sampling_params)
+
+    assert setup_kwargs["cuda_graphs_enabled"] is True
+    assert setup_kwargs["cuda_graph_scope"] == expected_scope
 
 
 def test_megatron_generation_shards_adapter_input_across_dp_and_gathers_in_order():

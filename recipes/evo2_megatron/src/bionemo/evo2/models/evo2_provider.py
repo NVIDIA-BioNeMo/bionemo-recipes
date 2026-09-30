@@ -18,6 +18,7 @@
 
 
 import math
+import os
 import sys
 from dataclasses import dataclass
 from functools import partial
@@ -81,6 +82,73 @@ def _patch_megatron_dataset_helper_compile() -> None:
 
 _patch_megatron_dataset_helper_compile()
 register_allowed_target_prefix("bionemo.evo2.")
+
+
+ContextParallelCommType = Literal["p2p", "a2a"]
+CONTEXT_PARALLEL_COMM_TYPES: tuple[ContextParallelCommType, ...] = ("p2p", "a2a")
+_FA4_SUPPORTED_COMPUTE_CAPABILITY_MAJORS = frozenset({9, 10, 11, 12})
+
+
+def _configure_fa4_for_device(
+    model_provider: TransformerConfig,
+    *,
+    device_capability: Optional[tuple[int, int]] = None,
+) -> bool:
+    """Use FA4 only where its forward, backward, and paged-KV paths are supported.
+
+    MCore and TE currently treat an importable ``flash_attn.cute`` as sufficient to use
+    FA4. The pinned FA4 release can run a subset of forward operations on SM8x, but this
+    recipe's packed forward, training backward, and paged-KV paths require SM9x or newer.
+    On older GPUs, preserve the provider-selected TE backend (the default ``flash``
+    selects the installed FA2 implementation) and make both TE and MCore use FA2.
+
+    Returns:
+        Whether MCore may use FA4 on the selected device.
+    """
+    from megatron.core.transformer import attention as mcore_attention
+
+    # ``attention_backend`` is the user-facing selector. MCore derives these TE
+    # variables when the model is built, so discard inherited values before it does so.
+    for variable in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_UNFUSED_ATTN"):
+        os.environ.pop(variable, None)
+
+    if device_capability is None and torch.cuda.is_available():
+        device_capability = torch.cuda.get_device_capability()
+    fa4_supported = device_capability is not None and device_capability[0] in _FA4_SUPPORTED_COMPUTE_CAPABILITY_MAJORS
+    if fa4_supported:
+        return bool(getattr(mcore_attention, "HAVE_FA4", False))
+
+    mcore_attention.HAVE_FA4 = False
+    if device_capability is not None and device_capability[0] >= 8:
+        from transformer_engine.pytorch.attention.dot_product_attention.utils import FlashAttentionUtils
+
+        # TE has one flash selector for FA2/FA3/FA4 and currently considers an
+        # installed FA4 eligible on every SM8x GPU. Hide only FA4 so ``flash`` can
+        # select FA2 on SM80/SM86/SM89. Upstream FA4 support for these older
+        # architectures is under development; remove this guard once that support
+        # lands and the pinned TE release recognizes it.
+        FlashAttentionUtils.v4_is_installed = False
+    return False
+
+
+def configure_runtime_context_parallel_comm_type(
+    model_provider: TransformerConfig,
+    requested: Optional[str],
+) -> ContextParallelCommType:
+    """Apply the runtime CP transport, ignoring any value serialized in a checkpoint.
+
+    The transport changes how TE schedules the same context-parallel attention
+    calculation. It is an execution choice rather than a model definition, so
+    prediction and inference resolve it after checkpoint instantiation. P2P is
+    the backward-compatible, faster default; A2A is an explicit tighter-parity
+    option.
+    """
+    resolved = "p2p" if requested is None else requested
+    if resolved not in CONTEXT_PARALLEL_COMM_TYPES:
+        choices = ", ".join(CONTEXT_PARALLEL_COMM_TYPES)
+        raise ValueError(f"Unsupported context-parallel communication type {resolved!r}; expected one of: {choices}")
+    model_provider.cp_comm_type = resolved
+    return resolved
 
 
 def get_vocab_size(*args, **kwargs):
@@ -223,12 +291,20 @@ def build_evo2_mamba_inference_state_config(model, *, conv_dtype=None, ssm_dtype
     from megatron.core.inference.config import (
         MambaInferenceStateConfig,  # lazy: heavy mcore import — keep evo2_provider importable without the full inference stack
     )
+    from megatron.core.ssm.mamba_hybrid_layer_allocation import Symbols
 
     decoder = model.decoder if hasattr(model, "decoder") else model
     conv_states_shape, ssm_states_shape = decoder.mamba_state_shapes_per_request()
-    layer_type_list = decoder.layer_type_list  # mcore symbols, set in HyenaStack.__init__
+    layer_type_list = list(decoder.layer_type_list)  # mcore symbols, set in HyenaStack.__init__
+    if not any(layer_type in (Symbols.ATTENTION, Symbols.DS_ATTENTION) for layer_type in layer_type_list):
+        # DynamicInferenceContext now requires at least one attention slot because its
+        # pipeline-synchronized request scheduler is backed by the paged KV allocator.
+        # Some deep PP layouts produce valid Hyena-only stages. Append a bookkeeping
+        # slot after all real local layers so their layer_map indices and Mamba state
+        # slots remain unchanged; no model layer ever reads or writes this KV entry.
+        layer_type_list.append(Symbols.ATTENTION)
     return MambaInferenceStateConfig(
-        layer_type_list=list(layer_type_list),
+        layer_type_list=layer_type_list,
         conv_states_shape=tuple(conv_states_shape),
         ssm_states_shape=tuple(ssm_states_shape),
         conv_states_dtype=conv_dtype or torch.float32,
@@ -241,12 +317,15 @@ def make_evo2_dynamic_inference_context_cls():
 
     Evo2 constrains each standalone decode context to the active request count and enables
     decode-only CUDA graph dimensions, so the graph path does not need an Evo2-specific
-    context subclass. Keeping the exact mcore type also preserves mcore's CUDA graph
-    argument checks without runtime compatibility hooks.
+    context subclass. Install Evo2's storage-span-aware paged KV append before returning
+    the exact mcore type, preserving mcore's CUDA graph argument checks.
 
     Returns:
         The mcore ``DynamicInferenceContext`` class.
     """
+    from bionemo.evo2.models.megatron.hyena.paged_kv_cache import install_large_tensor_safe_kv_append
+
+    install_large_tensor_safe_kv_append()
     from megatron.core.inference.contexts.dynamic_context import (
         DynamicInferenceContext,  # lazy: heavy mcore import; keep evo2_provider importable without the full inference stack
     )
@@ -369,7 +448,7 @@ def bind_hyena_packed_views_to_dynamic_context_batch(model, dyn_ctx, *, request_
 
     conv_states = dyn_ctx.mamba_conv_states  # (num_mamba_layers, max_requests, *conv_shape)
     ssm_states = dyn_ctx.mamba_ssm_states  # (num_mamba_layers, max_requests, *ssm_shape)
-    layer_map = dyn_ctx.layer_map  # global-0based -> per-type-local index
+    layer_map = dyn_ctx.layer_map  # pipeline-stage-local layer index -> per-type-local index
 
     # One packed dict per state-dict bucket the Hyena ops use, installed on the live context.
     packed: dict = {}
@@ -383,16 +462,16 @@ def bind_hyena_packed_views_to_dynamic_context_batch(model, dyn_ctx, *, request_
     # the context's layer_map so the conv/ssm sub-slice lands in the exact slot
     # ``mamba_states_cache(layer_number)`` would return.
     hyena_layers = [
-        layer
-        for layer in decoder.layers
+        (local_layer_idx, layer)
+        for local_layer_idx, layer in enumerate(decoder.layers)
         if hasattr(layer, "mixer") and hasattr(layer.mixer, "hyena_state_shapes_per_request")
     ]
     assert len(hyena_layers) == len(per_layer), (
         f"Hyena-layer/per-layer-shape count mismatch ({len(hyena_layers)} vs {len(per_layer)}); "
         "hyena_state_shapes_per_request() and the layer walk disagree."
     )
-    for layer, shapes in zip(hyena_layers, per_layer):
-        mamba_layer_idx = layer_map[layer.layer_number - 1]
+    for (local_layer_idx, _layer), shapes in zip(hyena_layers, per_layer):
+        mamba_layer_idx = layer_map[local_layer_idx]
         # conv slots: whole per-(layer,request) rows, shaped [B, *conv_shape] for the op.
         conv_view = conv_states[mamba_layer_idx, start_slot:end_slot]  # [B, *conv_shape] — STABLE alias
         packed["fir"].register(shapes.conv_owner_id, conv_view)
@@ -407,6 +486,65 @@ def bind_hyena_packed_views_to_dynamic_context_batch(model, dyn_ctx, *, request_
 def bind_hyena_packed_views_to_dynamic_context(model, dyn_ctx, *, request_slot: int):
     """Bind Hyena state-dict entries to a single live dynamic-context Mamba slot."""
     return bind_hyena_packed_views_to_dynamic_context_batch(model, dyn_ctx, request_slots=[request_slot])
+
+
+def bind_hyena_packed_views_to_static_context(model, static_ctx, *, batch_size: int, device):
+    """Install persistent full-size Hyena state views on a static inference context.
+
+    Static prefill ordinarily stores a freshly allocated tail whose last dimension is
+    only ``min(prompt_length, filter_length - 1)``.  That is correct for eager decode,
+    but it prevents a CUDA graph from retaining stable state pointers and makes short
+    prompts ineligible for the fused decode kernel.  Allocate the uniform per-layer
+    state once and reuse :class:`_PackedHyenaSlotStateDict` so every prefill copies its
+    tail into a stable, right-aligned full ring.
+    """
+    batch_size = int(batch_size)
+    if batch_size < 1:
+        raise ValueError(f"Static Hyena state binding requires a positive batch size, got {batch_size}")
+
+    decoder = model.decoder if hasattr(model, "decoder") else model
+    conv_shape, ssm_shape, per_layer = decoder.hyena_state_shapes_per_request()
+    conv_states = torch.zeros(
+        (len(per_layer), batch_size, *conv_shape),
+        dtype=torch.float32,
+        device=device,
+    )
+    ssm_states = torch.zeros(
+        (len(per_layer), batch_size, *ssm_shape),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    packed = {}
+    for kind in ("fir", "inner_fir", "iir"):
+        state_dict = _PackedHyenaSlotStateDict(kind)
+        packed[kind] = state_dict
+        object.__setattr__(static_ctx, f"{kind}_filter_state_dict", state_dict)
+
+    for layer_index, shapes in enumerate(per_layer):
+        packed["fir"].register(shapes.conv_owner_id, conv_states[layer_index])
+        width, last_dim = shapes.ssm_shape
+        packed[shapes.ssm_kind].register(
+            shapes.ssm_owner_id,
+            ssm_states[layer_index, :, :width, :last_dim],
+        )
+
+    object.__setattr__(static_ctx, "_evo2_hyena_conv_states", conv_states)
+    object.__setattr__(static_ctx, "_evo2_hyena_ssm_states", ssm_states)
+    object.__setattr__(static_ctx, "_evo2_hyena_packed_state_dicts", tuple(packed.values()))
+    return list(packed.values())
+
+
+def reset_hyena_packed_views_for_new_request(static_ctx) -> None:
+    """Zero persistent static Hyena buffers and make the next forward a prefill."""
+    state_dicts = getattr(static_ctx, "_evo2_hyena_packed_state_dicts", ())
+    with torch.no_grad():
+        for tensor_name in ("_evo2_hyena_conv_states", "_evo2_hyena_ssm_states"):
+            tensor = getattr(static_ctx, tensor_name, None)
+            if tensor is not None:
+                tensor.zero_()
+        for state_dict in state_dicts:
+            state_dict.reset_for_new_request()
 
 
 def get_batch(
@@ -447,7 +585,7 @@ def get_batch(
     )
 
     # slice batch along sequence dimension for context parallelism
-    batch = get_batch_on_this_cp_rank(batch, is_hybrid_cp=False)
+    batch = get_batch_on_this_cp_rank(batch, is_hybrid_cp=False, cp_group=pg_collection.cp)
     attention_mask = batch.get("attention_mask")
     if need_attention_mask and attention_mask is None:
         raise ValueError("Attention mask is required but not found in the batch")
@@ -715,6 +853,7 @@ class HyenaModelProvider(TransformerConfig, ModelProviderMixin[MCoreHyenaModel])
         Returns:
             MCoreHyenaModel: Configured Hyena model instance
         """
+        _configure_fa4_for_device(self)
         self.bias_activation_fusion = False if self.remove_activation_post_first_layer else self.bias_activation_fusion
 
         assert getattr(self, "virtual_pipeline_model_parallel_size", None) is None and vp_stage is None, (

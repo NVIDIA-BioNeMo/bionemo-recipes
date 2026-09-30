@@ -77,6 +77,20 @@ def _unwrap_evo2_model(model: Any) -> Any:
     return current
 
 
+def _prepare_evo2_quantized_inference(model: Any) -> None:
+    """Prepare a shared FP8/FP4 training model for arbitrary rollout row counts."""
+    config = getattr(model, "config", None)
+    if not (getattr(config, "fp8", None) or getattr(config, "fp4", None)):
+        return
+
+    from bionemo.evo2.run.low_precision import prepare_model_for_quantized_inference
+
+    # The wrappers persist for the next policy update, so construct their Transformer
+    # Engine helper tensors outside an enclosing inference_mode context.
+    with torch.inference_mode(False):
+        prepare_model_for_quantized_inference(model, config)
+
+
 def should_use_evo2_native_batched_generation(cfg: dict[str, Any], model: Any, batch_size: int) -> bool:
     """Return whether NeMo-RL should bypass MCore's generic coordinator for Evo2."""
     generation = cfg.get("generation", {}) or {}
@@ -173,6 +187,7 @@ def generate_evo2_native_batched(
     *,
     evo2_seed: int | None = None,
     ignore_eos: bool = False,
+    preserve_eos_token: bool = False,
     strict_generation: bool = False,
 ) -> list[Evo2GenerationResult]:
     """Generate Evo2 completions with the standalone batched dynamic-decode lifecycle."""
@@ -180,8 +195,9 @@ def generate_evo2_native_batched(
 
     from bionemo.evo2.run.infer import (
         Evo2InferenceComponents,
-        _generate_native_dynamic,
+        _resolve_native_dynamic_cuda_graph_scope,
         _setup_native_dynamic_components,
+        generate,
     )
 
     if not sampling_params:
@@ -201,14 +217,32 @@ def generate_evo2_native_batched(
     native_dynamic = getattr(worker, "_evo2_native_dynamic_components", None)
     if native_dynamic is None:
         raw_model = _unwrap_evo2_model(unwrap_model(worker.model))
+        _prepare_evo2_quantized_inference(raw_model)
+        cuda_graph_impl = str(mcore_generation_config.get("cuda_graph_impl", "local"))
+        requested_cuda_graph_scope = str(mcore_generation_config.get("inference_cuda_graph_scope", "block"))
+        model_config = getattr(raw_model, "config", None)
+        effective_cuda_graph_scope = _resolve_native_dynamic_cuda_graph_scope(
+            requested_cuda_graph_scope,
+            cuda_graph_impl=cuda_graph_impl,
+            fp8_enabled=bool(getattr(model_config, "fp8", None)),
+            fp4_enabled=bool(getattr(model_config, "fp4", None)),
+        )
+        if effective_cuda_graph_scope != requested_cuda_graph_scope:
+            logger.warning(
+                "Evo2 global FP8/FP4 rollout uses layer-scope CUDA graphs instead of requested %s scope",
+                requested_cuda_graph_scope,
+            )
         native_dynamic = _setup_native_dynamic_components(
             model=raw_model,
             raw_model=raw_model,
             max_seq_length=int(mcore_generation_config["max_model_len"]),
             evo2_seed=initial_seed,
-            cuda_graphs_enabled=mcore_generation_config.get("cuda_graph_impl") != "none",
+            cuda_graphs_enabled=cuda_graph_impl != "none",
+            cuda_graph_scope=effective_cuda_graph_scope,
         )
         worker._evo2_native_dynamic_components = native_dynamic
+    # This model is reused immediately for an autograd-enabled policy update.
+    native_dynamic.use_torch_inference_mode = False
     _reseed_evo2_native_dynamic(native_dynamic, initial_seed)
 
     components = Evo2InferenceComponents(
@@ -220,7 +254,7 @@ def generate_evo2_native_batched(
     temperature = float(_batched_sampling_value(sampling_params, "temperature", required=False, default=1.0))
     top_k = int(_batched_sampling_value(sampling_params, "top_k", required=False, default=0))
     top_p = float(_batched_sampling_value(sampling_params, "top_p", required=False, default=0.0))
-    native_results = _generate_native_dynamic(
+    native_results = generate(
         components,
         tokenizer.prompts,
         max_new_tokens=max_new_tokens,
@@ -229,12 +263,14 @@ def generate_evo2_native_batched(
         top_p=top_p,
         return_log_probs=True,
         ignore_eos=ignore_eos,
+        preserve_eos_token=preserve_eos_token,
         strict_generation=strict_generation,
         enable_chunked_prefill=bool(mcore_generation_config.get("enable_chunked_prefill", False))
         and batched_decode_size <= 1,
         inference_dynamic_batching_max_tokens=mcore_generation_config.get("max_tokens"),
         inference_dynamic_batching_block_size=int(mcore_generation_config.get("block_size_tokens", 256)),
         evo2_batched_decode_size=batched_decode_size,
+        inference_backend="dynamic",
         result_callback=None,
     )
 
@@ -270,12 +306,50 @@ class Evo2MegatronGenerationAdapter:
     """Recipe-owned adapter for DP-sharded, model-parallel Evo2 generation."""
 
     requires_all_workers = True
+    # This adapter owns a pointer-stable dynamic context and CUDA-graph cache on the colocated
+    # policy model. NeMo-RL must not also construct or wake its separate coordinator engine.
+    bypasses_persistent_mcore_engine = True
 
     def __init__(self, config: dict[str, Any] | None = None):
         """Create an adapter from NeMo-RL generation adapter config."""
         self.config = dict(config or {})
         self.seed_stride = int(self.config.get("seed_stride", 1_000_003))
         self.call_index_offset = int(self.config.get("call_index_offset", 0))
+
+    def requires_persistent_model_storage(self, worker: Any) -> bool:
+        """Keep model tensors resident only after a CUDA graph has captured their storage."""
+        native_dynamic = getattr(worker, "_evo2_native_dynamic_components", None)
+        if native_dynamic is None or not getattr(native_dynamic, "cuda_graphs_enabled", False):
+            return False
+
+        dynamic_graph_ready = bool(
+            getattr(native_dynamic, "shared_dyn_ctx", None) is not None
+            and getattr(native_dynamic, "cuda_graph_replay_verified", False)
+        )
+        static_graph_ready = any(
+            getattr(context, "evo2_static_cuda_graph_replay_verified", False)
+            for context in (getattr(native_dynamic, "static_contexts", None) or {}).values()
+        )
+        return dynamic_graph_ready or static_graph_ready
+
+    def model_refit_complete(self, worker: Any) -> bool:
+        """Require fresh quantized CUDA graphs after colocated policy weights change."""
+        native_dynamic = getattr(worker, "_evo2_native_dynamic_components", None)
+        if native_dynamic is None or not getattr(native_dynamic, "cuda_graphs_enabled", False):
+            return False
+        if not self.requires_persistent_model_storage(worker):
+            return False
+
+        precision_kind = str(getattr(native_dynamic, "precision_kind", "")).lower()
+        model_config = getattr(getattr(native_dynamic, "hyena_model", None), "config", None)
+        quantized = precision_kind in {"fp8", "fp8-all-layers", "mxfp8", "nvfp4"} or bool(
+            getattr(model_config, "vortex_style_fp8", False)
+        )
+        if not quantized:
+            return False
+
+        native_dynamic.cuda_graph_force_recapture = True
+        return True
 
     def _distributed_rank(self, worker: Any) -> int:
         if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -434,6 +508,7 @@ class Evo2MegatronGenerationAdapter:
                 sampling_params,
                 evo2_seed=seed,
                 ignore_eos=bool(self.config.get("ignore_eos", False)),
+                preserve_eos_token=bool(self.config.get("preserve_eos_token", False)),
                 strict_generation=bool(self.config.get("strict_generation", False)),
             )
             expected_results = int(prompt_tokens_tensor.size(0))
@@ -466,6 +541,8 @@ class Evo2MegatronGenerationAdapter:
                     "generation_elapsed_s": 0.0,
                     "total_elapsed_s": 0.0,
                 }
+                phase_timing_exact = True
+                observed_timing_group = False
                 memory_peak_maxima = {
                     f"{phase_name}_peak_{memory_kind}_bytes": 0
                     for phase_name in (
@@ -499,6 +576,10 @@ class Evo2MegatronGenerationAdapter:
                         continue
                     seen_evidence_groups.add(evidence_group_key)
                     if result_timings is not None:
+                        observed_timing_group = True
+                        phase_timing_exact = phase_timing_exact and bool(
+                            result_timings.get("phase_timing_exact", False)
+                        )
                         for phase_name in phase_totals:
                             phase_totals[phase_name] += float(result_timings.get(phase_name, 0.0))
                     if result_memory is not None:
@@ -520,6 +601,31 @@ class Evo2MegatronGenerationAdapter:
                         "timing/train/generation/evo2_decode_elapsed_s": phase_totals["decode_elapsed_s"],
                         "timing/train/generation/evo2_generation_elapsed_s": phase_totals["generation_elapsed_s"],
                         "timing/train/generation/evo2_total_elapsed_s": phase_totals["total_elapsed_s"],
+                        "timing/train/generation/evo2_phase_timing_exact": float(
+                            observed_timing_group and phase_timing_exact
+                        ),
+                    }
+                )
+                generation_completion_tokens = sum(len(item.generated_tokens) for item in result)
+                decode_completion_tokens = sum(max(0, len(item.generated_tokens) - 1) for item in result)
+                generation_elapsed_s = phase_totals["generation_elapsed_s"]
+                decode_elapsed_s = phase_totals["decode_elapsed_s"]
+                native_elapsed_s = timing["timing/train/generation/evo2_native_elapsed_s"]
+                timing.update(
+                    {
+                        "timing/train/generation/evo2_generation_completion_tokens": float(
+                            generation_completion_tokens
+                        ),
+                        "timing/train/generation/evo2_decode_completion_tokens": float(decode_completion_tokens),
+                        "timing/train/generation/evo2_end_to_end_completion_tokens_per_s": (
+                            generation_completion_tokens / native_elapsed_s if native_elapsed_s > 0 else 0.0
+                        ),
+                        "timing/train/generation/evo2_generation_completion_tokens_per_s": (
+                            generation_completion_tokens / generation_elapsed_s if generation_elapsed_s > 0 else 0.0
+                        ),
+                        "timing/train/generation/evo2_decode_completion_tokens_per_s": (
+                            decode_completion_tokens / decode_elapsed_s if decode_elapsed_s > 0 else 0.0
+                        ),
                     }
                 )
                 timing.update(
@@ -534,7 +640,15 @@ class Evo2MegatronGenerationAdapter:
         return worker._parse_result_to_batched_data_dict(data, result)
 
     def finish_worker(self, worker: Any) -> None:
-        """Release native Evo2 generation state before logprob/training phases."""
-        if hasattr(worker, "_evo2_native_dynamic_components"):
-            delattr(worker, "_evo2_native_dynamic_components")
-        torch.cuda.empty_cache()
+        """Reset requests while retaining the graph-warmed engine across RL cycles.
+
+        NeMo-RL calls this hook after every rollout and validation generation. The adapter's
+        persistent-storage contract prevents its colocated offload from rebinding graph-captured
+        parameters; derived modal tables refresh in place before the next decode. Releasing this
+        cache here would rebuild the context and recapture the same physical request shapes every
+        cycle.
+        """
+        native_dynamic = getattr(worker, "_evo2_native_dynamic_components", None)
+        shared_dyn_ctx = getattr(native_dynamic, "shared_dyn_ctx", None)
+        if shared_dyn_ctx is not None:
+            shared_dyn_ctx.reset()

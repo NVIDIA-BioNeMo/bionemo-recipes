@@ -18,9 +18,15 @@ performance on gene essentiality prediction, variant effect prediction, and
 ## Installation
 
 ```bash
-./.ci_build.sh  # build the virtualenv
-source ./.ci_test_env.sh  # source the virtualenv
+./.ci_build.sh           # build an editable venv on the container's Torch/CUDA/TE stack
+source ./.ci_test_env.sh # source the virtualenv
 ```
+
+The build uses `--system-site-packages` and resolver overrides for Torch,
+TorchVision, Triton, and Transformer Engine so it reuses the versions supplied
+by the NVIDIA PyTorch container. It does not install a second CUDA or cuDNN
+stack. The phage-generation recipe uses the same core dependency pins and
+installation contract, plus its workflow-specific dependencies and assets.
 
 ## CLI tools
 
@@ -69,6 +75,13 @@ torchrun --nproc-per-node 2 --no-python \
   --use-subquadratic-ops
 ```
 
+> **Tip:** `--use-subquadratic-ops` remains the training switch for
+> `b2b_causal_conv1d` and the fused `fft_causal_conv1d` / `causal_conv1d`
+> Hyena kernels. For `predict_evo2`, it remains available on the rectangular
+> compatibility path. `infer_evo2` uses it only with the static-Flash backend;
+> dynamic inference ignores it because segmented prefill and fused recurrent
+> decode already own those phases.
+
 ### Checkpoint retention
 
 `--most-recent-k K` keeps the latest K checkpoints; `-1` leaves all cleanup to
@@ -84,12 +97,16 @@ add flags such as:
 
 With best-K enabled, the save interval must be a multiple of the validation interval. The callback assigns the closest already-recorded metric when each checkpoint is saved, writes all scalar validation results to `validation_metrics.json`, and records the chosen assignments in `checkpoint_metrics.json`; its `best_checkpoint` field points to the selected relative checkpoint directory. By default, missing matches warn and use recent-K retention; `--strict-checkpoint-metric` stops instead and reports the raw validation keys. TensorBoard adds a ` validation` suffix to those raw keys. Checkpoints that predate newly enabled tracking are left in place as historical unscored checkpoints.
 
-> **Tip:** The `--use-subquadratic-ops` flag enables fused subquadratic-ops
-> CUDA kernels (`b2b_causal_conv1d` for proj+mixer fusion in prefill,
-> `fft_causal_conv1d` / `causal_conv1d` inside `engine.parallel_fir`). It
-> applies to training, batch prediction (`predict_evo2`), and the prefill
-> phase of autoregressive inference (`infer_evo2`); per-token decode is
-> already in optimal recurrent form and is unaffected.
+> **Tip:** Packed prediction and native ragged prefill use boundary-safe
+> segmented Hyena kernels. Packing and restoration happen once at the endpoint;
+> layers consume flat storage plus sequence boundaries without per-layer
+> sorting, padding, or copying.
+
+The CUDA 13 recipe installs the pinned `flash-attn-4[cu13]` package. The pin was
+qualified in the 26.07 container on GB300 and resolves the matching FA4 support
+packages without replacing the container's Torch 2.13 or CUDA 13.3 runtime. The
+existing `subquadratic-ops-torch-cu13` dependency remains available for the
+rectangular compatibility path.
 
 ### Autoregressive generation (`infer_evo2`)
 
@@ -99,24 +116,61 @@ Generate DNA sequences from a prompt using an MBridge checkpoint:
 torchrun --nproc_per_node 1 --no-python \
   infer_evo2 \
   --ckpt-dir /path/to/mbridge/checkpoint \
-  --prompt "ATCGATCGATCGATCG" \
+  --prompt-file prompts.jsonl \
+  --prompt-batch-size 16 \
   --max-new-tokens 200 \
   --temperature 1.0 \
-  --output-file generated.txt
+  --output-file generated.jsonl
 ```
 
 Options:
 
 - `--ckpt-dir` — path to MBridge checkpoint directory (required).
-- `--prompt` / `--prompt-file` — input sequence (inline or from file).
+- `--prompt` / `--prompt-file` — one inline sequence or JSONL requests.
+- `--prompt-batch-size` — requests per ragged prefill and parallel decode group.
+  Each group is issued as one `cu_seqlens`-described prefill; decode advances
+  all active requests together.
 - `--max-new-tokens` — number of tokens to generate (default: 100).
+- `--ignore-eos --strict-generation` — require exactly the requested generation
+  length and fail on overflow, fallback, or incomplete evidence. With an output
+  file, `--stream-output` uses a `.partial` file and promotes it atomically only
+  after the strict run succeeds.
+- `--preserve-eos-token` — include a sampled terminal EOS/EOD token and, with
+  `--return-log-probs`, its log-probability in the returned trajectory. This is
+  opt-in; downstream DNA consumers should trim the terminal marker before
+  biological scoring.
 - `--temperature` — sampling temperature (default: 1.0).
-- `--top-k` / `--top-p` — top-k or nucleus sampling (0 = disabled).
+- `--top-k` / `--top-p` — top-k and nucleus sampling (0 = disabled). When both
+  are enabled, filtering runs in the documented order: temperature, top-k,
+  then top-p; returned token log-probabilities use the final filtered distribution.
 - `--tensor-parallel-size` — tensor parallelism for large models (default: 1).
-- `--max-seq-length` — maximum sequence length (default: 8192).
-- `--use-subquadratic-ops` — use fused subquadratic-ops kernels for prefill
-  (b2b causal conv, FFT/causal conv1d in `parallel_fir`). Recommended when
-  processing many prompts in one process.
+- `--context-parallel-size` — context parallelism for long prompts (default: 1).
+- `--context-parallel-comm-type` — runtime attention transport for context
+  parallelism: `p2p` (the default ring-style path) or `a2a` (tighter BF16 parity,
+  with a possible performance cost). This runtime choice overrides checkpoint
+  metadata.
+- `--max-seq-length` — optional fixed context cap. When omitted, the engine
+  sizes it from the prompt and generation budget.
+- `--cuda-graph-scope` — `block` (default) captures the complete decoder in one
+  graph; `layer` keeps the compatibility path. Global FP8/FP4 recipes
+  automatically use `layer` because Transformer Engine's quantization state is
+  not block-graph compatible. Use `--cuda-graph-impl none` for an eager
+  debugging reference.
+- The default `--inference-backend dynamic` is the measured fast path for
+  medium/long generation with either uniform or mixed prompt lengths. Its
+  packed prefill and batched recurrent decode avoid padding without changing
+  the invocation. Use `static-flash` only when an A/B at the target length
+  shows it wins for an equal-tokenized-length batch; short workloads can cross
+  over in its favor.
+- `--mixed-precision-recipe bf16_with_fp8_current_scaling_mixed` — regular
+  Transformer Engine FP8. Add `--fp8-all-layers` for every compatible 7B TE
+  linear; batches with a flattened row count divisible by eight avoid the
+  alignment fallback. Packed prediction's default sequence-parallel policy
+  retains TP but disables SP for global FP8/FP4 on current MCore.
+- `--use-subquadratic-ops` — compatibility path for fused static-Flash
+  rectangular prefill. It is ignored by the default dynamic backend, which
+  retains its faster CUDA-graphed decode. With static-Flash it forces eager
+  decode because a fallback extension kernel is unsafe to capture.
 
 ### Batch sequence scoring (`predict_evo2`)
 
@@ -129,8 +183,7 @@ torchrun --nproc_per_node 1 --no-python \
   --ckpt-dir /path/to/mbridge/checkpoint \
   --output-dir predictions/ \
   --micro-batch-size 4 \
-  --write-interval epoch \
-  --use-subquadratic-ops
+  --write-interval epoch
 ```
 
 Options:
@@ -142,9 +195,33 @@ Options:
 - `--log-prob-collapse-option` — aggregation: `sum`, `mean`, or `per_token`.
 - `--embedding-layer` — extract embeddings from a specific layer instead of logits
   (supports negative indexing, e.g., `-1` for last layer).
+- `--context-parallel-comm-type` — runtime attention transport for context
+  parallelism: `p2p` (the default ring-style path) or `a2a` (tighter BF16 parity,
+  with a possible performance cost). This runtime choice overrides checkpoint
+  metadata.
 - `--mask-phylogenetic-tags` — mask phylogenetic tags in loss computation.
-- `--use-subquadratic-ops` — enable fused Hyena convolution kernels for faster
-  scoring (recommended for larger datasets; has a one-time compilation cost).
+- Sequence packing is enabled by default at context-parallel size 1 and is
+  intended for ragged batches. TP works with either layout; CP>1 automatically
+  uses rectangular batches. For uniform medium/long sequences, benchmark
+  `--no-sequence-packing`, which can be faster because it uses the established
+  batched path without padding waste.
+- `--packed-token-budget` — cap aggregate tokens in each packed call (default:
+  250,000). A longer individual sequence is emitted alone. Calls are grouped
+  once by geometric length bucket by default; use
+  `--no-packing-length-bucketing` to retain input order. Packing and result
+  restoration happen at the endpoint, not around every Hyena layer.
+- `--use-subquadratic-ops` — enable legacy fused convolution kernels on the
+  rectangular compatibility path. It is unnecessary for the default segmented
+  packed path.
+- `--fp8-all-layers` — remove the selected global TE FP8 recipe's first/last
+  BF16 block exclusions. For Hopper 7B prediction, use it with
+  `--mixed-precision-recipe bf16_with_fp8_current_scaling_mixed`; it does not
+  select Vortex-style FP8.
+- `--sequence-parallel-policy {auto,on,off}` — `auto` keeps SP for BF16 TP and
+  disables it for global FP8/FP4 because current MCore's padding shim
+  double-reduces row outputs. Use `on` only to requalify a future pad-aware
+  single-reduction MCore path with aligned/ragged TP parity and performance A/B
+  tests. `--no-sequence-parallel` remains a backward-compatible alias for off.
 
 ### Data preprocessing (`preprocess_evo2`)
 
@@ -595,8 +672,10 @@ have currently demonstrated small training runs at 2M context on only 512 H100 G
 > **Note:** If you would like to use one of the checkpoints that requires FP8 and Hopper (e.g., that does not work
 > on Blackwell), you need to supply both `--mixed-precision-recipe bf16-mixed` to disable the default Megatron FP8
 > recipes, as well as `--vortex-style-fp8` which enables the custom FP8 recipe that supports these models. For the
-> robust NVIDIA fine-tuned variants of these models, you can run with FP8 using the available Megatron recipes. The
-> `evo2_7b` model size does not have these sensitivity issues so it can be executed with Megatron style FP8 or BF16.
+> robust NVIDIA fine-tuned variants of these models, you can run with regular FP8 across all compatible TE linears.
+> The `evo2_7b` model size does not have these sensitivity issues, so on Hopper it can be executed with global
+> Megatron FP8 (current or delayed scaling) or BF16. To remove MBridge current scaling's default BF16 first/last
+> blocks, add `--fp8-all-layers`.
 
 | HF Model                                                                                        | BioNeMo Resource Name                                                                                                 | Blackwell FP8 | Blackwell BF16 | Hopper FP8 | Hopper BF16 | Ampere | Notes                                                                                                                                                                                                                                                                    |
 | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------- | -------------- | ---------- | ----------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
