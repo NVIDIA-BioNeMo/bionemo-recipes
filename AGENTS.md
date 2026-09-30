@@ -99,4 +99,3 @@ in `models/` and `recipes/`, then validates the port with the shared `BaseModelT
 - **Path citation rule:** skill documentation must cite repo paths as `$BIONEMO_RECIPES/<path>`,
   not as bare `models/...` or `recipes/...`. Bare paths escape the skill subtree and break when
   vendored. Example: `$BIONEMO_RECIPES/models/esm2/convert.py::_pack_qkv_weight`.
-- Skills read `models/` and `recipes/` as references only. They must not modify this repository.

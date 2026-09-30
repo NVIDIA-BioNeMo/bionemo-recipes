@@ -12,7 +12,7 @@ license: Apache-2.0 AND CC-BY-4.0
 compatibility: "torch>=2.4; transformer_engine[pytorch]>=2.0; CUDA GPU (Hopper or newer for FP8)"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
   author: Zoey Zhang <zozhang@nvidia.com>
   domain: model-training
   tags:
@@ -80,13 +80,6 @@ Output: `ACCELERATION_REPORT.md` identifying the architecture as equivariant/GNN
 layers outside the message-passing step swapped for TE, message passing itself left untouched and
 named as the reason, Tier 1 validation only.
 
-**Cannot be attempted — hard stop:**
-
-> "Add FP8 to this model" (model definition generated dynamically at runtime, no static class to
-> locate)
-
-Output: `ACCELERATION_REPORT.md` stating the model definition could not be located, zero source
-files modified.
 
 ## Prerequisites
 
@@ -136,17 +129,20 @@ resolves and verifies this variable before any other step.
 Two failure classes appear in `ACCELERATION_REPORT.md` and in `.bionemo-accel/` artifacts. Use
 the correct one; conflating them produces misleading reports and blocks retries.
 
-| Class   | Meaning                                                                                                                                                                                                                                   | Retryable | Examples                                                                                                                                              |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ENV_`  | Declared dependencies exist but could not be installed or imported in this environment. The architecture has not been judged. The run cannot proceed until the environment is fixed, but a clean environment may succeed.                 | Yes       | `torch` or `transformer_engine` not importable; `probe_hardware.py` exits 1 due to a missing package; `pip install` failed; wrong Python interpreter. |
-| `ARCH_` | The model definition cannot be located or executed for a reason intrinsic to the target (no weights, no tokenizer, no sample input, dynamically-generated model class). No amount of environment fixing will unblock the run. | No        | Model class defined dynamically at runtime; no weights or tokenizer available for the parity check.              |
+| Class   | Meaning                                                                                                                                                                                                                                                                             | Examples                                                                                                                                                   |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ENV_`  | Declared dependencies exist but could not be installed or imported in this environment. The architecture has not been judged. The run cannot proceed until the environment is fixed, but a clean environment may succeed.                                                           | `torch` or `transformer_engine` not importable; `probe_hardware.py` exits 1 due to a missing package; `pip install` failed; wrong Python interpreter.      |
+| `ARCH_` | The model cannot be executed for a reason intrinsic to the target (no weights, no tokenizer, no sample input, no reachable code path to construct it) — so no forward pass, and therefore no probing run, is possible either. No amount of environment fixing will unblock the run. | No weights or tokenizer available for the parity check; dynamically-generated model class that also cannot be instantiated (nothing to construct it from). |
 
 **Critical distinction:** "no forward pass can be run" is `ARCH_` only when the blocker is
-intrinsic to the target (missing weights, no tokenizer, purely-generated code). If the blocker is
-an uninstallable dependency, emit `ENV_` and stop — do not treat it as an architectural judgment. An
-architecture with no TE analogue for its top-level block (diffusion, GNN/equivariant, state-space,
-or a non-dot-product attention mechanism) is neither class — it is not a failure, it routes to Depth
-C best effort in `references/te-conversion.md`.
+intrinsic to the target (missing weights, no tokenizer, no sample input, no reachable path to
+construct the model). A dynamically-generated model class is not, by itself, an intrinsic blocker —
+if it can still be instantiated and run, do a probing run over the live module tree instead of
+hard-stopping (see `references/architecture-matching.md`). If the blocker is an uninstallable
+dependency, emit `ENV_` and stop — do not treat it as an architectural judgment. An architecture with
+no TE analogue for its top-level block (diffusion, GNN/equivariant, state-space, or a non-dot-product
+attention mechanism) is neither class — it is not a failure, it routes to Depth C best effort in
+`references/te-conversion.md`.
 
 ## Guardrails
 
@@ -155,12 +151,12 @@ C best effort in `references/te-conversion.md`.
    block supports, down to Depth C kernel swaps around the irreducibly custom core, and state the
    limitation. Only a model that cannot be located or run at all is a stop. What is never acceptable
    is a port presented as more validated than it is.
-2. **Low precision ships disabled.** Generate FP8/FP4 configs with `enabled: false` — the user
+1. **Low precision ships disabled.** Generate FP8/FP4 configs with `enabled: false` — the user
    opts in with one line.
-3. **Preserve the original.** The parity check needs the unported model as its baseline.
-4. **Report honestly.** Every acceleration skipped, every test that was skipped rather than
+1. **Preserve the original.** The parity check needs the unported model as its baseline.
+1. **Report honestly.** Every acceleration skipped, every test that was skipped rather than
    passed, and every caveat goes in `ACCELERATION_REPORT.md`.
-5. **When unsure whether TE supports something, check TE itself before ruling it out.** Before writing a target off as
+1. **When unsure whether TE supports something, check TE itself before ruling it out.** Before writing a target off as
    "no TE analogue" or "unavailable at this depth," check the actual signature/docstring in
    [NVIDIA/TransformerEngine](https://github.com/NVIDIA/TransformerEngine)
    (`transformer_engine/pytorch/`) or <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html>
@@ -205,17 +201,21 @@ Install in the same environment as `probe_hardware.py` (same interpreter). If in
 record the error in `.bionemo-accel/inventory.json` under `"dep_install_error"` and emit `ENV_`
 — do not proceed to architecture matching until the target's own deps are resolvable.
 
-**Phase 1 — Architecture match and depth.** Read `references/architecture-matching.md`. Score
-the target on the six rubric axes against the reference menu (encoder/MLM pre-norm and post-norm,
-causal LM dense, MoE, genomics LM, encoder–decoder). All six axes are advisory — they select the
-reference and how much of the block is hand-built, and each mismatch is recorded as a caveat, not a
-rejection; `te.TransformerLayer`'s `self_attn_mask_type` / `window_size` cover causal, bidirectional,
+**Phase 1 — Architecture match and depth.** Read `references/architecture-matching.md`. Score the
+target against the reference menu (encoder/MLM pre-norm and post-norm, causal LM dense, MoE,
+genomics LM, encoder–decoder) on the three depth-gate axes that actually decide `te.TransformerLayer`
+eligibility — normalization placement, MLP routing (dense vs MoE), and attention mechanism — then
+record everything else (normalization type, MLP gating, masking, attention grouping, positional
+encoding, head structure) as config to wire up, not as a scored axis. A depth-gate mismatch is
+recorded as a caveat, not a rejection — it only selects the reference and how much of the block is
+hand-built; `te.TransformerLayer`'s `self_attn_mask_type` / `window_size` cover causal, bidirectional,
 sliding-window, and custom-mask attention as configuration, not a fork in which reference applies.
 Only an architecture family with no TE analogue for its top-level block (diffusion, GNN/equivariant,
 state-space, or a non-dot-product attention mechanism) falls to Depth C best-effort kernel swaps
 instead, never a stop. Write `.bionemo-accel/match.json`, noting which reference each piece of the
-port comes from. Hard-stop only when the model definition cannot be located or no forward pass can
-be run; then write the hard-stop `ACCELERATION_REPORT.md` and exit.
+port comes from — including probed module-tree evidence when there's no static source to cite.
+Hard-stop only when no forward pass can be run at all (so neither static source nor a probing run
+can recover the architecture); then write the hard-stop `ACCELERATION_REPORT.md` and exit.
 
 **Phase 2 — Hardware and TE probe.** Run:
 
@@ -377,29 +377,29 @@ corresponding output file.
 
 All artifacts are written into the **target repo**, never into `$BIONEMO_RECIPES`.
 
-| Artifact                             | Phase | Written                        | Description                                                                                                                        |
-| ------------------------------------ | ----- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `.bionemo-accel/inventory.json`      | 0     | Always                         | Model dimensions, entry points, framework, TE import status                                                                        |
-| `.bionemo-accel/match.json`          | 1     | On match                       | Architecture family, confidence score, matched reference                                                                           |
-| `.bionemo-accel/hardware.json`       | 2     | Always                         | GPU, compute capability, per-recipe TE support flags                                                                               |
-| `.bionemo-accel/gemm/summary.json`   | 3     | When ≥1 benchmark run succeeds | GEMM speedup for successful modes, skip flags applied, interpretation reminders                                                    |
-| `.bionemo-accel/precision.json`      | 3     | Always                         | Selected recipe and rationale                                                                                                      |
-| `parity_check.py`                    | 5     | Always                         | Tier 1 forward-pass parity check against the original model                                                                        |
-| `tests/test_modeling_ported.py`      | 5     | Depth B only                   | BaseModelTest harness subclass for the ported model                                                                                |
-| `conftest.py`                        | 5     | Depth B only                   | pytest plugin registration (`pytest_plugins = ["tests.common.fixtures"]`) — written to repo root so pytest permits the declaration |
-| `ACCELERATION_REPORT.md`             | 6     | Always                         | Final report: measured speedups, one-line FP8 enable config, limitations                                                           |
-| `ACCELERATION_REPORT.md` (hard stop) | 1     | Model cannot be located or run | Blocker reason (unlocatable model definition or no runnable forward pass); no other files written or modified                     |
+| Artifact                             | Phase | Written                        | Description                                                                                                                                               |
+| ------------------------------------ | ----- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.bionemo-accel/inventory.json`      | 0     | Always                         | Model dimensions, entry points, framework, TE import status                                                                                               |
+| `.bionemo-accel/match.json`          | 1     | On match                       | Architecture family, confidence score, matched reference                                                                                                  |
+| `.bionemo-accel/hardware.json`       | 2     | Always                         | GPU, compute capability, per-recipe TE support flags                                                                                                      |
+| `.bionemo-accel/gemm/summary.json`   | 3     | When ≥1 benchmark run succeeds | GEMM speedup for successful modes, skip flags applied, interpretation reminders                                                                           |
+| `.bionemo-accel/precision.json`      | 3     | Always                         | Selected recipe and rationale                                                                                                                             |
+| `parity_check.py`                    | 5     | Always                         | Tier 1 forward-pass parity check against the original model                                                                                               |
+| `tests/test_modeling_ported.py`      | 5     | Depth B only                   | BaseModelTest harness subclass for the ported model                                                                                                       |
+| `conftest.py`                        | 5     | Depth B only                   | pytest plugin registration (`pytest_plugins = ["tests.common.fixtures"]`) — written to repo root so pytest permits the declaration                        |
+| `ACCELERATION_REPORT.md`             | 6     | Always                         | Final report: measured speedups, one-line FP8 enable config, limitations                                                                                  |
+| `ACCELERATION_REPORT.md` (hard stop) | 1     | Model cannot be run at all     | Blocker reason (no runnable forward pass — so neither static source nor a probing run could recover the architecture); no other files written or modified |
 
 **Branch:** `bionemo-accel/<family>` is created in the target repo on a successful port (e.g. `bionemo-accel/encoder-mlm`, `bionemo-accel/causal-lm-dense`).
 
 ## Troubleshooting
 
-| Error / Symptom                                    | Cause                                                                                                                                  | Solution                                                                                                                                 |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Hard stop at Phase 1                               | Model definition cannot be located, or no forward pass can be run | Read `references/architecture-matching.md`. An architecture with no TE analogue (diffusion, GNN/equivariant, state-space, or a non-dot-product attention mechanism) is never a stop — it falls to Depth C best-effort kernel swaps in `references/te-conversion.md` instead |
-| `Could not find benchmarks/gemm/benchmark_gemm.py` | TE pip wheel does not include source; no NGC container or local checkout found                                                         | Pass `--te-source <path>`, set `TE_SOURCE_DIR`, or add `--allow-clone`                                                                   |
-| GEMM speedup near 1.0×                             | Silent kernel fallback to a lower-precision kernel                                                                                     | Re-run with `--verbose-kernels`; confirm expected dispatch in `NVTE_LOG_LEVEL=1` output before concluding there is no benefit            |
-| `torch not importable` after install               | Script ran in the wrong Python environment                                                                                             | Verify `which python` inside your training venv/conda env; re-run `probe_hardware.py` in that environment                                |
-| `transformer_engine.pytorch.autocast` missing      | TE version predates the API BioNeMo recipes use                                                                                        | Upgrade to `transformer-engine[pytorch]>=2.0` or use `nvcr.io/nvidia/pytorch:26.04-py3`                                                  |
-| Parity check fails after port                      | Weight conversion bug or `te.autocast` scope too narrow                                                                                | Compare QKV packing against `$BIONEMO_RECIPES/models/esm2/convert.py`; verify `te.autocast` wraps the full forward pass                  |
-| `quantized_model_init` + megatron-fsdp fails       | BIONEMO-3012 (upstream xfail)                                                                                                          | Do not combine `quantized_model_init` with `megatron-fsdp` until resolved; note in report                                                |
+| Error / Symptom                                    | Cause                                                                                                                                | Solution                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hard stop at Phase 1                               | No forward pass can be run at all, so neither static source nor a probing run over the live module tree can recover the architecture | Read `references/architecture-matching.md`. A dynamically-generated model class that *can* still be instantiated and run is not a stop — probe its live module tree instead. An architecture with no TE analogue (diffusion, GNN/equivariant, state-space, or a non-dot-product attention mechanism) is also never a stop — it falls to Depth C best-effort kernel swaps in `references/te-conversion.md` instead |
+| `Could not find benchmarks/gemm/benchmark_gemm.py` | TE pip wheel does not include source; no NGC container or local checkout found                                                       | Pass `--te-source <path>`, set `TE_SOURCE_DIR`, or add `--allow-clone`                                                                                                                                                                                                                                                                                                                                            |
+| GEMM speedup near 1.0×                             | Silent kernel fallback to a lower-precision kernel                                                                                   | Re-run with `--verbose-kernels`; confirm expected dispatch in `NVTE_LOG_LEVEL=1` output before concluding there is no benefit                                                                                                                                                                                                                                                                                     |
+| `torch not importable` after install               | Script ran in the wrong Python environment                                                                                           | Verify `which python` inside your training venv/conda env; re-run `probe_hardware.py` in that environment                                                                                                                                                                                                                                                                                                         |
+| `transformer_engine.pytorch.autocast` missing      | TE version predates the API BioNeMo recipes use                                                                                      | Upgrade to `transformer-engine[pytorch]>=2.0` or use `nvcr.io/nvidia/pytorch:26.04-py3`                                                                                                                                                                                                                                                                                                                           |
+| Parity check fails after port                      | Weight conversion bug or `te.autocast` scope too narrow                                                                              | Compare QKV packing against `$BIONEMO_RECIPES/models/esm2/convert.py`; verify `te.autocast` wraps the full forward pass                                                                                                                                                                                                                                                                                           |
+| `quantized_model_init` + megatron-fsdp fails       | BIONEMO-3012 (upstream xfail)                                                                                                        | Do not combine `quantized_model_init` with `megatron-fsdp` until resolved; note in report                                                                                                                                                                                                                                                                                                                         |

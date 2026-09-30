@@ -5,13 +5,13 @@ reference implementation exactly. Do not blend depths.
 
 ## Choosing the depth
 
-| Condition                                                                | Depth                             |
-| ------------------------------------------------------------------------ | --------------------------------- |
-| Code already constructs `te.TransformerLayer`                            | **A** — config layer only         |
-| HF-style transformer blocks, pre-norm, no TE                             | **B** — full port + converter     |
-| HF-style transformer blocks, post-norm, no TE                            | **B-postnorm** — hand-built block |
-| Two stacks with cross-attention (T5-style)                               | **B-encdec** — two TE stacks      |
-| Block cannot become a TE layer (structural quirk, non-dot-product attention mechanism, or no TE analogue for the sequence-mixing core) but has clean `nn.Linear` / norm / attention sub-ops | **C** — kernel swaps only |
+| Condition                                                                                                                                                                                   | Depth                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| Code already constructs `te.TransformerLayer`                                                                                                                                               | **A** — config layer only         |
+| HF-style transformer blocks, pre-norm, no TE                                                                                                                                                | **B** — full port + converter     |
+| HF-style transformer blocks, post-norm, no TE                                                                                                                                               | **B-postnorm** — hand-built block |
+| Two stacks with cross-attention (T5-style)                                                                                                                                                  | **B-encdec** — two TE stacks      |
+| Block cannot become a TE layer (structural quirk, non-dot-product attention mechanism, or no TE analogue for the sequence-mixing core) but has clean `nn.Linear` / norm / attention sub-ops | **C** — kernel swaps only         |
 
 Depth C is the landing spot for a target whose block has a structural quirk (an extra gate, an
 unusual residual, exotic MoE routing) or an attention mechanism that isn't maskable scaled-dot-product
@@ -23,8 +23,10 @@ GNN/equivariant, and state-space architectures:
 the sequence-mixing core (a scan, message passing, denoiser conditioning) stays custom, but the
 projections, norms, MLPs, and — where a bare attention core fits — the attention computation itself
 still swap. It is a real outcome, not a consolation prize: the report says plainly that no TE
-transformer block was substituted, and lists exactly which wins were applied. Only a target whose
-model definition cannot be located, or that has no runnable forward pass, produces no port at all.
+transformer block was substituted, and lists exactly which wins were applied. Only a target with no
+runnable forward pass at all — so neither static source nor a probing run over the live module tree
+can recover the architecture — produces no port at all; see "No static source: probe the live model
+before giving up" in `references/architecture-matching.md`.
 
 ### Depth B-postnorm
 
@@ -224,11 +226,11 @@ Model it on `$BIONEMO_RECIPES/models/esm2/convert.py`. Three parts:
    `model.encoder.layers.*.self_attention.layernorm_qkv.layer_norm_weight`, and
    `...intermediate.dense.weight` → `...layernorm_mlp.fc1_weight`. Build the reverse with
    `{v: k for k, v in mapping.items()}`.
-2. **`@state.state_transform`-decorated functions** for anything not a rename:
+1. **`@state.state_transform`-decorated functions** for anything not a rename:
    `_pack_qkv_weight` / `_pack_qkv_bias` (interleaved head-major QKV fusion) and their
    `_unpack_*` inverses; `_pad_weights` / `_pad_bias` (vocab padding — bias padded with
    `torch.finfo(dtype).min`, not zero) and their `_unpad_*` inverses.
-3. **Two entry points**: `convert_<model>_hf_to_te(model_hf, **config_kwargs)` and
+1. **Two entry points**: `convert_<model>_hf_to_te(model_hf, **config_kwargs)` and
    `convert_<model>_te_to_hf(model_te, **config_kwargs)`.
 
 Vendor `$BIONEMO_RECIPES/models/esm2/state.py` into the target — it is the self-contained transform engine

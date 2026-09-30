@@ -24,8 +24,8 @@ Fingerprint:
 - Bidirectional attention — no causal mask anywhere in the attention path.
 - MLM head (`lm_head`, tied or untied to the embedding) or a token/sequence classification head.
 - LayerNorm (not RMSNorm), applied *before* the sublayer.
-- Plain, non-gated MLP. The activation is a config value, not part of the fingerprint — see the
-  MLP form row of the rubric.
+- Plain, non-gated MLP. The activation is a config value, not part of the fingerprint — see "Config
+  to record" below.
 - Learned absolute, rotary, or no position embeddings.
 
 Built on `te.TransformerLayer`.
@@ -125,42 +125,66 @@ path. Because nothing in-repo exercises this, three caveats are mandatory in the
 
 ### Mixing pieces
 
-Nothing requires a target to take everything from one entry. A post-norm encoder with continuous
+Nothing requires a target to take everything from one recipe. A post-norm encoder with continuous
 inputs can take its block from geneformer and its `quantized_model_init` handling, FP8 config
 plumbing, and padded-vocab treatment from `$BIONEMO_RECIPES/models/esm2/modeling_esm_te.py`. Say in
 `.bionemo-accel/match.json` which reference each piece came from.
 
-## The rubric
+## Depth gate: what actually decides `te.TransformerLayer` eligibility
 
-Score the target against the reference menu above on six axes. Record each as `match` / `mismatch` /
-`unknown` in `.bionemo-accel/match.json` with the specific deciding evidence (file and symbol) —
-"looks like Llama" is not evidence; `model.py::DecoderBlock` uses `RMSNorm` + `SwiGLU` +
-`num_key_value_heads=8` is.
+Three things decide whether the target can build on `te.TransformerLayer`. Record
+each as `match` / `mismatch` / `unknown` in `.bionemo-accel/match.json` with the specific deciding
+evidence (file and symbol) — "looks like Llama" is not evidence; `model.py::DecoderBlock` uses
+`RMSNorm` + `SwiGLU` + `num_key_value_heads=8` is.
 
-| Axis                | What to look for                                              |
-| ------------------- | ------------------------------------------------------------- |
-| Attention masking   | causal vs bidirectional; sliding window; any custom bias term |
-| Normalization       | LayerNorm vs RMSNorm; pre-norm vs post-norm                   |
-| MLP form            | plain up/down + activation vs gated SwiGLU vs MoE             |
-| Positional encoding | learned absolute, RoPE, ALiBi, relative, none                 |
-| Attention grouping  | MHA vs GQA vs MQA                                             |
-| Head structure      | MLM, causal LM, classification, regression, multi-task        |
+| Gate                    | Decides                                                                                                  | Evidence to look for                                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Normalization placement | Depth B (`te.TransformerLayer`) vs Depth B-postnorm (hand-assembled block)                               | LayerNorm/RMSNorm applied before vs after the residual add                                                               |
+| MLP routing             | Depth B/B-postnorm (dense MLP — a plain kwarg) vs custom routing (MoE)                                   | a router / `num_local_experts` / top-k gating replacing the dense MLP                                                    |
+| Attention mechanism     | Depth B (any `DotProductAttention`-compatible mechanism — masking is config) vs Depth C (no TE analogue) | linear/kernelized attention, retrieval-augmented attention, block-sparse routing that changes the compute pattern itself |
 
-**All six axes are advisory.** A mismatch is a caveat in the report, never a rejection — it only
-picks which reference to mirror and how much of the block is hand-built; match against the
-"Fingerprint" lists above for the mechanics of each. Three traps are worth flagging explicitly:
+A mismatch on any gate is a caveat in the report, never a rejection — it only picks which reference
+to mirror and how much of the block is hand-built; match against the "Fingerprint" lists above for
+the mechanics of each. Three traps are worth flagging explicitly:
 
-- **Attention masking is a kwarg, not a fork.** `self_attn_mask_type=` / `window_size=` on
-  `te.TransformerLayer` cover causal, bidirectional, sliding window, and arbitrary custom masks — see
-  the Depth B example in `references/te-conversion.md`. What has no TE analogue is a non-dot-product
-  attention *mechanism* (see "No full TE block" below), not a masking difference.
 - **Normalization placement picks the depth track, not just the reference.** Pre-norm builds on
   `te.TransformerLayer` (Depth B); post-norm cannot and needs the hand-assembled block (Depth
   B-postnorm, geneformer's `TEBertLayer`) — see "Encoder / masked LM — post-norm" above.
-- **Positional encoding can be load-bearing at init time.**
+- **MoE is a structural fork, not a kwarg.** `te.TransformerLayer`'s MLP sublayer takes a dense
+  `activation=` kwarg (gated forms included — see "Config to record" below); top-k expert routing
+  isn't expressible that way. Mixtral's `NVMixtralSparseMoeBlock` builds a router and `GroupedLinear`
+  experts by hand — see "Mixture of experts" above.
+- **Attention mechanism, not masking, is the fork.** `DotProductAttention` implements maskable
+  scaled-dot-product attention for any masking pattern (causal, bidirectional, sliding window, custom
+  bias — see "Config to record" below); what it cannot do is a different compute pattern (linear/
+  kernelized attention, block-sparse routing) — see "No full TE block" below.
+
+## Config to record, not score
+
+Everything else about the block is a kwarg or a forward-time wiring detail on `te.TransformerLayer` /
+`te.MultiheadAttention`. None of it changes which reference or depth applies, but it still needs to be
+recorded in `.bionemo-accel/match.json` so the port sets it correctly.
+
+| Axis                | Record as                                                                              | Evidence                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Normalization type  | `normalization="RMSNorm"` / `"LayerNorm"` kwarg                                        | `$BIONEMO_RECIPES/models/llama3/modeling_llama_te.py` passes `normalization="RMSNorm"`        |
+| MLP gating          | `activation="swiglu"` (or other gated form) kwarg — still a plain dense MLP            | same file, `activation="swiglu"`                                                              |
+| Attention masking   | `self_attn_mask_type=` / `window_size=` kwarg                                          | see the Depth B example in `references/te-conversion.md`                                      |
+| Attention grouping  | `num_gqa_groups=` kwarg                                                                | `llama3/modeling_llama_te.py` passes `num_gqa_groups=config.num_key_value_heads`              |
+| Positional encoding | external `RotaryPositionEmbedding` module, threaded into `forward(rotary_pos_emb=...)` | `esm2/modeling_esm_te.py::NVEsmEmbeddings`, `llama3/modeling_llama_te.py`                     |
+| Head structure      | determines the wrapper/converter, not the layer                                        | MLM / causal LM / classification / regression / multi-task head on top of the ported backbone |
+
+Two traps are still worth flagging:
+
+- **Positional encoding can be load-bearing at init time even though it's "just wiring."**
   `$BIONEMO_RECIPES/models/esm2/modeling_esm_te.py::NVEsmEmbeddings` raises on anything but rotary —
   a target with no position encoding drops the `RotaryPositionEmbedding` construction entirely rather
   than configuring it off.
+- **ALiBi is unverified on the bare `te.TransformerLayer` path.** The only in-repo evidence of
+  `core_attention_bias_type="alibi"` is in codonfm's custom lower-level wrapper
+  (`encodon_te_mha.py`), built directly on `te.DotProductAttention`/`MultiheadAttention` rather than
+  the high-level fused `TransformerLayer`. Treat a target with ALiBi bias as needing the lower-level
+  primitives until proven otherwise, not as a plain kwarg on `te.TransformerLayer`.
 
 ## No full TE block: best-effort Depth C
 
@@ -190,8 +214,8 @@ validate Tier 1 only.
 - **Non-dot-product attention mechanisms** — linear/kernelized attention (Performer, linear
   transformers), retrieval-augmented attention, and block-sparse routing that changes the compute
   pattern itself (not just which positions are masked) have no TE analogue; `DotProductAttention`
-  only implements maskable scaled-dot-product attention (masking itself is config — see the rubric
-  above). The projections, norms, and MLPs around the attention computation still swap, and where the
+  only implements maskable scaled-dot-product attention (masking itself is config — see "Config to
+  record" above). The projections, norms, and MLPs around the attention computation still swap, and where the
   core is genuinely scaled-dot-product attention under nonstandard QKV/mask shaping, it often still
   fits: see `$BIONEMO_RECIPES/recipes/codonfm_ptl_te/src/models/components/encodon_te_mha.py` for
   `DotProductAttention` used standalone, for both self- and cross-attention.
@@ -203,14 +227,37 @@ handle precision through `--mixed-precision-recipe`. Point the user there rather
 Not a hard stop, but Tier 1 only: **vision-only backbones** — `$BIONEMO_RECIPES/recipes/vit/` exists
 but has no `BaseModelTest` coverage, so parity rests on the Tier 1 check alone. Say so in the report.
 
+## No static source: probe the live model before giving up
+
+A dynamically-generated model class (built by a factory function, a config-driven builder, or
+`type()` at runtime) is not by itself a reason to hard stop — it means there is no `file.py::Class`
+to read, not that the architecture is unknowable. If the model can be instantiated and a forward
+pass can be run at all (the same precondition Phase 5 needs anyway), do a probing run first:
+
+- Walk `model.named_modules()` (or attach forward hooks) to recover the live module tree — class
+  names, shapes, `num_attention_heads` / `num_key_value_heads`, activation functions, and whether
+  norm/MLP/attention sub-modules are the plain building blocks the depth gate and config axes above
+  ask about.
+- Use that as the fingerprint evidence for the depth gate in place of a source citation. Record it in
+  `.bionemo-accel/match.json` the same way a static citation would be recorded, e.g.
+  `model.layers[0].mlp: class=SwiGLU, gate_proj/up_proj/down_proj present` instead of a file/symbol
+  pointer.
+- Route the result through the normal depth gate and Depth B/C logic exactly as if it came from static
+  source. A probed fingerprint is not weaker evidence than a code fingerprint, just differently
+  sourced — it only becomes a caveat in the report (no static converter reference to point to for
+  Tier 2, since there's no source to pack/unpack weights against) rather than a reason to stop.
+
 ## Hard stop: when no port can be attempted at all
 
-Only two conditions block every depth, including Depth C, because they mean the target cannot even
+Only one condition blocks every depth, including Depth C, because it means the target cannot even
 be inspected or run — not because of its architecture. Use failure class `ARCH_`:
 
-- The model definition cannot be located or is generated dynamically at runtime.
 - No forward pass can be run for the parity check because of a reason intrinsic to the target —
-  no weights, no tokenizer, no sample input — because then Phase 5 cannot prove anything.
+  no weights, no tokenizer, no sample input, or no reachable code path to construct the model at
+  all (so even a probing run is impossible) — because then Phase 5 cannot prove anything.
+
+This covers the dynamically-generated-class case only when instantiation *also* fails — if the
+class can be built and run, the probing path above applies instead.
 
 Do **not** use `ARCH_` when a forward pass cannot be run because a dependency failed to install.
 That is failure class `ENV_`: the target has not been judged, and the run may succeed in a clean
@@ -219,13 +266,15 @@ environment. See the "Failure classes" section in `SKILL.md`.
 In this case, write the hard-stop variant of `assets/ACCELERATION_REPORT.md.tmpl` and change
 nothing else in the target. It must state:
 
-1. What was detected, with the file and class names (or the absence of any) that led here.
-2. The **specific reason no depth can be attempted** — the model definition could not be located, or
-   no forward pass could be run. An architecture mismatch or advisory-axis mismatch (including
-   attention masking) is never the reason; those go to Depth C instead.
-3. Which accelerations, if any, would still be safe to apply by hand — for example, TE `FusedAdam`
+1. What was detected, with the file and class names (or the absence of any) that led here —
+   including whether a probing run was attempted and why it also failed to produce a usable module
+   tree.
+1. The **specific reason no depth can be attempted** — no forward pass could be run and no static or
+   probed model definition could be recovered. An architecture mismatch or advisory-axis mismatch
+   (including attention masking) is never the reason; those go to Depth C instead.
+1. Which accelerations, if any, would still be safe to apply by hand — for example, TE `FusedAdam`
    and `torch.compile` are architecture-agnostic — clearly marked as *not applied and not validated
    by this skill*.
-4. A pointer to the nearest recipe if the user wants to port manually.
+1. A pointer to the nearest recipe if the user wants to port manually.
 
 Then exit; do not offer to "try anyway".
