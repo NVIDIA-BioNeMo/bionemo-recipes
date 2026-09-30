@@ -80,7 +80,6 @@ Output: `ACCELERATION_REPORT.md` identifying the architecture as equivariant/GNN
 layers outside the message-passing step swapped for TE, message passing itself left untouched and
 named as the reason, Tier 1 validation only.
 
-
 ## Prerequisites
 
 ### Run the skill in your training environment
@@ -151,12 +150,12 @@ attention mechanism) is neither class — it is not a failure, it routes to Dept
    block supports, down to Depth C kernel swaps around the irreducibly custom core, and state the
    limitation. Only a model that cannot be located or run at all is a stop. What is never acceptable
    is a port presented as more validated than it is.
-1. **Low precision ships disabled.** Generate FP8/FP4 configs with `enabled: false` — the user
+2. **Low precision ships disabled.** Generate FP8/FP4 configs with `enabled: false` — the user
    opts in with one line.
-1. **Preserve the original.** The parity check needs the unported model as its baseline.
-1. **Report honestly.** Every acceleration skipped, every test that was skipped rather than
+3. **Preserve the original.** The parity check needs the unported model as its baseline.
+4. **Report honestly.** Every acceleration skipped, every test that was skipped rather than
    passed, and every caveat goes in `ACCELERATION_REPORT.md`.
-1. **When unsure whether TE supports something, check TE itself before ruling it out.** Before writing a target off as
+5. **When unsure whether TE supports something, check TE itself before ruling it out.** Before writing a target off as
    "no TE analogue" or "unavailable at this depth," check the actual signature/docstring in
    [NVIDIA/TransformerEngine](https://github.com/NVIDIA/TransformerEngine)
    (`transformer_engine/pytorch/`) or <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/index.html>

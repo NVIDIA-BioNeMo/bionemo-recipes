@@ -269,12 +269,12 @@ nothing else in the target. It must state:
 1. What was detected, with the file and class names (or the absence of any) that led here —
    including whether a probing run was attempted and why it also failed to produce a usable module
    tree.
-1. The **specific reason no depth can be attempted** — no forward pass could be run and no static or
+2. The **specific reason no depth can be attempted** — no forward pass could be run and no static or
    probed model definition could be recovered. An architecture mismatch or advisory-axis mismatch
    (including attention masking) is never the reason; those go to Depth C instead.
-1. Which accelerations, if any, would still be safe to apply by hand — for example, TE `FusedAdam`
+3. Which accelerations, if any, would still be safe to apply by hand — for example, TE `FusedAdam`
    and `torch.compile` are architecture-agnostic — clearly marked as *not applied and not validated
    by this skill*.
-1. A pointer to the nearest recipe if the user wants to port manually.
+4. A pointer to the nearest recipe if the user wants to port manually.
 
 Then exit; do not offer to "try anyway".

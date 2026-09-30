@@ -226,11 +226,11 @@ Model it on `$BIONEMO_RECIPES/models/esm2/convert.py`. Three parts:
    `model.encoder.layers.*.self_attention.layernorm_qkv.layer_norm_weight`, and
    `...intermediate.dense.weight` → `...layernorm_mlp.fc1_weight`. Build the reverse with
    `{v: k for k, v in mapping.items()}`.
-1. **`@state.state_transform`-decorated functions** for anything not a rename:
+2. **`@state.state_transform`-decorated functions** for anything not a rename:
    `_pack_qkv_weight` / `_pack_qkv_bias` (interleaved head-major QKV fusion) and their
    `_unpack_*` inverses; `_pad_weights` / `_pad_bias` (vocab padding — bias padded with
    `torch.finfo(dtype).min`, not zero) and their `_unpad_*` inverses.
-1. **Two entry points**: `convert_<model>_hf_to_te(model_hf, **config_kwargs)` and
+3. **Two entry points**: `convert_<model>_hf_to_te(model_hf, **config_kwargs)` and
    `convert_<model>_te_to_hf(model_te, **config_kwargs)`.
 
 Vendor `$BIONEMO_RECIPES/models/esm2/state.py` into the target — it is the self-contained transform engine
