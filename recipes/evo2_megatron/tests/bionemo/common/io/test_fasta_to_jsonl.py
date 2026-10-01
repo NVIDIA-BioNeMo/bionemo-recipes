@@ -56,12 +56,10 @@ def test_distinct_output(tmp_path, uppercase):
     assert source.read_text().startswith(">sample")
 
 
-def test_cli_rejects_source(tmp_path, monkeypatch, capsys):
+def test_cli_rejects_source(tmp_path, monkeypatch):
     source = tmp_path / "input.fasta"
     source.write_text(">id\nACGT\n")
     monkeypatch.setattr("sys.argv", ["bionemo_fasta_to_jsonl", str(source), str(source)])
-    with pytest.raises(SystemExit) as error:
+    with pytest.raises(ValueError, match="different files"):
         main()
-    assert error.value.code == 1
-    assert "different files" in capsys.readouterr().err
     assert source.read_text() == ">id\nACGT\n"

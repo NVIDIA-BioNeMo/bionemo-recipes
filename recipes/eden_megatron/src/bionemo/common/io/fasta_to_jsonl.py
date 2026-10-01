@@ -110,11 +110,7 @@ def main() -> None:
     if not args.input.exists():
         print(f"Error: input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
-    try:
-        count = fasta_to_jsonl(args.input, args.output, uppercase=args.upper)
-    except ValueError as error:
-        print(f"Error: {error}", file=sys.stderr)
-        sys.exit(1)
+    count = fasta_to_jsonl(args.input, args.output, uppercase=args.upper)
     print(f"Wrote {count} record(s) to {args.output}")
 
 
