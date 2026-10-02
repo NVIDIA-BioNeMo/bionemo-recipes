@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Projector zoo tests. The perceiver3d cases moved from ct-nemotron's
-tests/test_adapters.py; only the names changed (design §1.5)."""
+"""Projector construction, initialization, and output parity."""
 
 from __future__ import annotations
 
@@ -67,7 +66,7 @@ def test_mlp2x_gelu_projects_token_sequences():
 
 
 def test_mlp2x_gelu_norm_projects_in_bf16():
-    # The in-__init__ bf16 cast is part of the lifted genome-research contract.
+    # Construction casts this projector to BF16.
     projector = Mlp2xGeluNormProjector(mm_hidden_size=8, hidden_size=16, output_size=24)
     out = projector(torch.randn(2, 5, 8, dtype=torch.bfloat16))
     assert out.shape == (2, 5, 24)
@@ -162,8 +161,6 @@ def test_external_projector_factory_must_return_projector():
 
 # ---------------------------------------------------------------------------
 # Mlp2xGeluNormProjector — init hardening and reset semantics
-# (moved from genome-research's tests/test_dna_projection.py in its port
-# Phase 6; the class was lifted from there in its Phase 1)
 # ---------------------------------------------------------------------------
 
 

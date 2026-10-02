@@ -17,14 +17,14 @@
 
 The schema version and format discriminator are recorded in every manifest
 and checked on load, so a checkpoint written by an older package fails loudly
-rather than silently mis-scattering (design §8). Bumping ``SCHEMA_VERSION``
+rather than silently mis-scattering. Bumping ``SCHEMA_VERSION``
 requires shipping a converter for the previous version in the same change
 (AGENTS.md).
 """
 
 from __future__ import annotations
 
-# Artifact schema (design §3.4). A new counter for a new format, starting at
+# Artifact schema. A new counter for a new format, starting at
 # 1. Readers dispatch on the discriminator below, never on this integer: a
 # legacy consumer schema also wrote "schema_version": 1.
 SCHEMA_VERSION = 1
@@ -34,30 +34,30 @@ SCHEMA_VERSION = 1
 # written before the rename for zero functional gain.
 MANIFEST_FORMAT = "nemotron-add-modality/mm-projector-manifest"
 
-# Flat forward kwargs (design §3.1): per-projector encoder features, plus an
+# Flat forward kwargs: per-projector encoder features, plus an
 # optional explicit index override for collators that need exact control.
 MM_FEATURES_PREFIX = "mm_features__"
 MM_TOKEN_INDICES_PREFIX = "mm_token_indices__"
 
 # Model-config key carrying the per-projector placeholder token ids used to
-# derive and validate scatter targets from input_ids (design §3.1). Each
+# derive and validate scatter targets from input_ids. Each
 # projector owns a distinct id, so interleaved multi-projector prompts route
 # by token identity and a misrouted index fails closed.
 MM_PLACEHOLDER_TOKEN_IDS_KEY = "mm_placeholder_token_ids"
 
-# Projector ownership modes (design §3.3).
+# Projector ownership modes.
 OWNERSHIP_MODULE = "module"
 OWNERSHIP_SIDECAR = "sidecar"
 OWNERSHIP_MODES = frozenset({OWNERSHIP_MODULE, OWNERSHIP_SIDECAR})
 
-# Trainability families (design §3.5). "lora" is the only family that may be
-# called an adapter (design §1.5).
+# Trainability families. "lora" is the only family that may be
+# called an adapter.
 TRAINABILITY_FAMILIES = frozenset({"projector", "extra", "lora"})
 
-# vLLM plugin modes (design §3.6).
+# vLLM plugin modes.
 VLLM_MODES = frozenset({"encode", "projected"})
 
-# Sidecar on-disk layout (design §3.4).
+# Sidecar on-disk layout.
 MANIFEST_FILENAME = "mm-projector-manifest.json"
 PROJECTOR_FILENAME = "mm-projector.safetensors"
 EXTRA_STATE_DIR = "extra"

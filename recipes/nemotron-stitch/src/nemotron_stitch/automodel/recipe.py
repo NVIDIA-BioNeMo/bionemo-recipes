@@ -15,14 +15,11 @@
 
 """ProjectorRecipeMixin: topology guards, projector materialization, artifact lifecycle.
 
-Moved from ct-nemotron's ``ConditioningFinetuneRecipeForVLM``
-(``automodel/recipe.py``) in ct-nemotron port Phase 3; the module-ownership
-warm start and export were promoted from genome-research's module-mode recipe
-(``automodel/recipe.py`` there) — the mixin's codec calls are DTensor-safe, so
-the same lifecycle serves both ownership modes.
+DTensor-safe codec calls give both projector ownership modes the same
+warm-start and export lifecycle.
 
 The mixin carries the pieces that are framework seams rather than modality
-behaviour. :class:`ProjectorFinetuneRecipe` adds the shared module-owned,
+behaviour.:class:`ProjectorFinetuneRecipe` adds the shared module-owned,
 typed-optimizer wiring used by feature-backed applications; consumers with a
 different optimizer surface can still compose the mixin directly.
 
@@ -30,8 +27,8 @@ The mixin is cooperative: it expects to sit left of an AutoModel recipe class
 (``class ConsumerRecipe(ProjectorRecipeMixin, FinetuneRecipeForVLM)``) and
 reads the AutoModel recipe surface — ``self.cfg``, ``self.dist_env``,
 ``self.model_parts``, ``self.pp_enabled``, ``self._get_cp_group_size()``.
-Sidecar ownership is qualified for exactly one rank (design §3.3); module
-ownership (genome-research port Phase 4e) is FSDP2-sharded and multi-rank.
+Sidecar ownership is qualified for exactly one rank; module
+ownership  is FSDP2-sharded and multi-rank.
 """
 
 from __future__ import annotations
@@ -61,8 +58,7 @@ class ProjectorSidecarState:
     (AutoModel 24b47e856263d313b942f0ed666c63fff83306b4) already tracks any
     assigned object with callable ``state_dict()``/``load_state_dict()`` and
     carries it through periodic and final checkpoints (``<attribute>.pt`` on
-    the coordinator) and native resume — the checkpoint path the U-7 review
-    concluded with, in place of a new addon protocol. The wrapper must stay a
+    the coordinator) and native resume. The wrapper must stay a
     plain object: an ``nn.Module`` would be
     routed into the model save path instead, and the attribute name must not
     contain ``val``/``eval``/``test``/``loss``, which the tracker skips.
@@ -185,9 +181,8 @@ class ProjectorRecipeMixin:
     placement (the projector is project state, not a registered submodule),
     the checkpoint-tracked resume state (``ProjectorSidecarState``), the
     initial sidecar load, and the portable sidecar export. Optimizer
-    construction is the consumer's seam: the two consumers pin different
-    AutoModel revisions with different optimizer-config surfaces (design
-    §3.5).
+    construction is the application's seam: AutoModel revisions can have
+    different optimizer-config surfaces.
 
     ``projector.trainability_extra_patterns`` names the consumer's extra
     family (learned marker embeddings and kin — in-tree parameters, so
@@ -283,7 +278,7 @@ class ProjectorRecipeMixin:
         if getattr(model, "mm_projector", None) is None:
             raise TypeError(f"multimodal model was not constructed: {type(model).__name__}")
         # The projector is owned as project state outside the module tree
-        # (sidecar ownership, design §3.3), so AutoModel's device placement
+        # , so AutoModel's device placement
         # never moves it; it stays on meta. Bring it to the model device and
         # initialize it (from meta) before the sidecar load and any forward or
         # optimizer use. Parameters are materialized in place, so an optimizer

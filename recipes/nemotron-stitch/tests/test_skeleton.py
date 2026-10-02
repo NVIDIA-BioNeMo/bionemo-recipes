@@ -29,7 +29,7 @@ FRAMEWORKS = {"nemo_automodel", "nemo_rl", "peft", "transformers", "vllm"}
 
 def test_base_import_has_no_framework_imports() -> None:
     # Run in a fresh interpreter: importing the package must neither require
-    # nor pull in any framework, installed or not (design §3.7).
+    # nor pull in any framework, installed or not.
     code = (
         "import sys, nemotron_stitch; "
         f"leaked = sorted(m for m in sys.modules if m.split('.')[0] in {FRAMEWORKS!r}); "

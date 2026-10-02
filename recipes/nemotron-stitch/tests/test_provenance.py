@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""provenance.py moved in verbatim from ct-nemotron; pin its behaviour."""
+"""Canonical provenance serialization and digest compatibility."""
 
 from __future__ import annotations
 

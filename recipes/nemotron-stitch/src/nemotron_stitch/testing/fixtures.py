@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Synthetic ragged batches for the flat index contract (design §3.2).
+"""Synthetic ragged batches for the flat index contract.
 
 The flat contract exists because of packed streams: one batch row holds
 several records, each contributing a different number of soft tokens. Neither
-consumer's real collator produces that at this layer — ct-nemotron's emits a
+consumer's real collator produces that at this layer — a dense collator emits a
 rectangular ``[B, T]`` grid — so the ragged fixture is synthetic. It carries
 uneven per-row token counts, one row with no soft tokens at all, and
 non-contiguous target positions, in both the flat and dense (``-1`` padded)

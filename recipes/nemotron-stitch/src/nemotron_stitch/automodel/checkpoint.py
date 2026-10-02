@@ -14,13 +14,10 @@
 # limitations under the License.
 
 """DTensor-safe parameter copies, state-dict adapter helpers, and the
-native-load conservation audit (design §4).
+native-load conservation audit.
 
-Lifted from genome-research's ``automodel/checkpoint.py`` (at
-``294e7372b542f4eb12d4924f066b6828a7e3c14f``) in its port Phase 4c, with the
-modality-specific names parameterized: the projector prefix, extra parameter
-names, and the config flag that re-includes projector state in HF exports are
-consumer-supplied.
+Projector prefixes, extra parameter names, and the flag that includes
+projector state in HF exports are supplied by the application.
 """
 
 from __future__ import annotations

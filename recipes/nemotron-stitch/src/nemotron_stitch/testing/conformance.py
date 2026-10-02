@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Exported conformance suite (design §6).
+"""Exported conformance suite.
 
 A shared library that only shares *code* drifts. Consumers subclass
 ``ProjectorContractSuite`` in their own ``tests/`` with their projector config,
@@ -57,7 +57,7 @@ _PLACEHOLDER = 99
 class ProjectorContractSuite:
     """Subclass with ``projector_config``, ``output_size`` (and optionally ``provenance``) set.
 
-    ``projector_ownership`` selects the host wiring (design §3.3): both modes
+    ``projector_ownership`` selects the host wiring: both modes
     run the same contract — scatter semantics, construction/init, artifact
     round-trip with provenance enforcement, and trainability exactness.
     """
@@ -96,7 +96,7 @@ class ProjectorContractSuite:
             def __init__(self, projector_registry):
                 super().__init__()
                 if ownership == OWNERSHIP_SIDECAR:
-                    # Sidecar ownership (design §3.3): outside the module tree.
+                    # Sidecar ownership: outside the module tree.
                     object.__setattr__(self, "mm_projector", projector_registry)
                 else:
                     # Module ownership: a registered, FSDP2-visible child.
@@ -199,7 +199,7 @@ class ProjectorContractSuite:
     def test_distinct_placeholder_ids_route_by_token_identity(self):
         """Two projectors, distinct placeholder ids, segments laid out against
         sorted-name order: routing must follow token identity, not position.
-        This is the multi-modality prompt contract (design §3.1)."""
+        This is the multi-modality prompt contract."""
         base = dict(self.projector_config)
         configs = []
         for suffix in ("a", "b"):

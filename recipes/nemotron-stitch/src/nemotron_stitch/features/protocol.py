@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FrozenEncoder Protocol (design §7).
+"""FrozenEncoder Protocol.
 
 The frozen upstream encoder (LLaVA's "vision tower"): constructed from a
 locked :class:`~nemotron_stitch.features.registry.EncoderSpec`, it maps

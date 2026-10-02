@@ -13,11 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Modality-neutral callback helpers for the NeMo RL encoder transport.
-
-Moved near-verbatim from ct-nemotron (ct-nemotron port Phase 4); ``projection_router``
-became ``frozen_projector`` per the package vocabulary.
-"""
+"""Modality-neutral callback helpers for the NeMo RL encoder transport."""
 
 from __future__ import annotations
 
@@ -82,6 +78,11 @@ def load_cached_features(
     cache = open_feature_cache(cache_root)
     features = torch.from_numpy(np.asarray(cache.get(datum["feature_key"])))
     return features, project_features(features, artifact_dir, adapter)
+
+
+def load_cached_policy_features(datum: dict[str, Any], adapter: str, *, cache_root: str) -> torch.Tensor:
+    """Read raw features for a policy-only preference pair."""
+    return torch.from_numpy(np.asarray(open_feature_cache(cache_root).get(datum["feature_key"])))
 
 
 def ground_truth_metadata(datum: dict[str, Any]) -> dict[str, Any]:

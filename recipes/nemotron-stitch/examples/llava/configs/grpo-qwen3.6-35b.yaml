@@ -36,7 +36,7 @@ checkpointing:
 
 policy:
   model_registry_callback: llava_qwen.register_moe_models
-  # Config-driven worker extension FQNs (U-5); see grpo.yaml.
+  # Config-driven worker extension FQNs; see grpo.yaml.
   worker_extension_cls_fqn: nemotron_stitch.nemo_rl.policy.EncoderDTensorPolicyWorkerV2
   # Both 67 GB model copies fit on the qualified 256 GiB GB300. Avoid a full
   # GPU-to-CPU MoE round trip around each colocated generation phase.
@@ -128,6 +128,9 @@ policy:
       # the 19.7 GiB produced by percentage-based free-memory sizing.
       kv_cache_memory_bytes: 4294967296
       enable_mm_embeds: true
+      # U-70: vLLM 0.25.1's async_scheduling default stalls colocated
+      # external-DP engines in the drain tail; pin the synchronous path.
+      async_scheduling: false
     colocated:
       enabled: true
 

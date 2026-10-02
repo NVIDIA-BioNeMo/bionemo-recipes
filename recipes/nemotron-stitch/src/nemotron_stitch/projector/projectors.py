@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Projector ABC, build_projector, and the projector zoo (design §4).
+"""Projector ABC, build_projector, and the projector zoo.
 
 The zoo is exactly what the two consumers run today: ``mlp2x_gelu`` and
-``perceiver3d`` moved from ct-nemotron's ``conditioning/adapters.py``, and
-``mlp2x_gelu_norm`` lifted from genome-research's ``dna_projection.py``.
+``mlp2x_gelu_norm`` adds output normalization to a two-layer projector.
 LLaVA's ``linear`` kind is deliberately absent: no consumer has one, and this
 package does not keep speculative code (AGENTS.md). Add it with its first
 caller.
@@ -38,7 +37,7 @@ class Projector(nn.Module, ABC):
     """Contract implemented by every encoder→LM projector.
 
     Features in (``mm_hidden_size`` wide), soft tokens out (``output_size``
-    wide). Geometry follows the flat index contract (design §3.2): flat
+    wide). Geometry follows the flat index contract: flat
     ``[N, mm_hidden_size]`` → ``[N, output_size]`` is canonical; the dense
     ``[B, T, ...]`` spelling is accepted where the kind supports it.
     """
@@ -236,10 +235,8 @@ def _trunc_normal_parameter_(parameter: torch.Tensor, *, std: float) -> None:
 class Mlp2xGeluNormProjector(Projector):
     """Linear-GELU-linear bridge with output normalization.
 
-    Lifted verbatim from genome-research's ``dna_projection.py`` at
-    ``be6594aef42bcd60f09f6490be19d672b967f066`` (including the DTensor/meta
-    init handling and the in-``__init__`` bf16 cast); genome-research Phase 1
-    parity-checks it against its source. The final LayerNorm keeps the bridge
+    DTensor/meta initialization and an initial BF16 cast are supported.
+    The final LayerNorm keeps the bridge
     output bounded during Stage 1 and prevents non-finite gradients when the
     bridge is continued in Stage 2.
     """
@@ -262,8 +259,7 @@ class Mlp2xGeluNormProjector(Projector):
         nn.init.zeros_(self.fc2.bias)
         # Eager construction initializes the LayerNorm itself, but the
         # meta->to_empty->reset flow (AutoModel materialization) leaves it as
-        # garbage without this. genome-research's initialize_weights covered
-        # for the omission consumer-side.
+        # uninitialized without an explicit reset.
         self.norm.reset_parameters()
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:

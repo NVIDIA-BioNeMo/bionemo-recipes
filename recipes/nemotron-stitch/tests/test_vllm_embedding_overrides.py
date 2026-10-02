@@ -185,7 +185,32 @@ def test_embedding_override_application_is_a_noop_without_declarations():
     assert result is embeddings
 
 
-def test_registered_vllm_model_applies_overrides_after_projected_scatter(tmp_path, monkeypatch):
+def test_additive_embedding_overrides_match_host_marker_deltas():
+    input_ids = torch.tensor([[1, 2, 3, 4, 1]])
+    embeddings = torch.arange(20, dtype=torch.float32).reshape(1, 5, 4)
+    deltas = torch.tensor([[0.5, -1.0, 2.0, 3.0], [4.0, 0.0, -2.0, 1.0]])
+    host = embeddings.clone()
+    host[0, 1] += deltas[0]
+    host[0, 3] += deltas[1]
+
+    result = apply_token_embedding_overrides(input_ids, embeddings, (2, 4), deltas, mode="add")
+
+    torch.testing.assert_close(result, host, rtol=0, atol=0)
+    torch.testing.assert_close(embeddings, torch.arange(20, dtype=torch.float32).reshape(1, 5, 4))
+
+
+def test_unknown_embedding_override_mode_fails_at_construction():
+    with pytest.raises(ValueError, match="unknown token embedding override mode"):
+        build_mm_plugin(
+            modality="override_test",
+            architecture="BadOverrideMode",
+            placeholder_text="<override_test>",
+            token_embedding_override_mode="multiply",
+        )
+
+
+@pytest.mark.parametrize("override_mode", ["replace", "add"])
+def test_registered_vllm_model_applies_overrides_after_projected_scatter(tmp_path, monkeypatch, override_mode):
     pytest.importorskip("vllm", reason="vLLM is not installed")
     from vllm import ModelRegistry
     from vllm.tokenizers import registry as tokenizer_registry
@@ -196,7 +221,7 @@ def test_registered_vllm_model_applies_overrides_after_projected_scatter(tmp_pat
     monkeypatch.setattr(tokenizer_registry, "cached_tokenizer_from_config", lambda _config: _Tokenizer())
     register = build_mm_plugin(
         modality="override_test",
-        architecture="TokenEmbeddingOverrideProjectedTest",
+        architecture=f"TokenEmbeddingOverrideProjectedTest{override_mode}",
         placeholder_text="<override_test>",
         mode="projected",
         base_model_cls=f"{__name__}:_ProjectedBase",
@@ -207,9 +232,10 @@ def test_registered_vllm_model_applies_overrides_after_projected_scatter(tmp_pat
         num_tokens_attr="max_tokens",
         geometry="variable",
         token_embedding_overrides={2: "learned_start", 4: "learned_end"},
+        token_embedding_override_mode=override_mode,
     )
     register()
-    model_cls = ModelRegistry._try_load_model_cls("TokenEmbeddingOverrideProjectedTest")
+    model_cls = ModelRegistry._try_load_model_cls(f"TokenEmbeddingOverrideProjectedTest{override_mode}")
     hf_config = SimpleNamespace(
         hidden_size=4,
         start="<start>",
@@ -230,7 +256,9 @@ def test_registered_vllm_model_applies_overrides_after_projected_scatter(tmp_pat
 
         torch.testing.assert_close(result[0], model.embedding.weight[1])
         torch.testing.assert_close(result[-1], model.embedding.weight[1])
-        torch.testing.assert_close(result[1], start)
-        torch.testing.assert_close(result[-2], end)
+        expected_start = start if override_mode == "replace" else model.embedding.weight[2] + start
+        expected_end = end if override_mode == "replace" else model.embedding.weight[4] + end
+        torch.testing.assert_close(result[1], expected_start)
+        torch.testing.assert_close(result[-2], expected_end)
         torch.testing.assert_close(result[2:-2], projected)
     assert not any(name.startswith("_stitch_token_embedding_override") for name in model.state_dict())

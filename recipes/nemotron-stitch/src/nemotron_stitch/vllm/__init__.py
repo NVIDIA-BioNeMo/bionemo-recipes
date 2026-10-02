@@ -13,4 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""vLLM integration (design §4). Framework imports are lazy (design §3.7)."""
+"""vLLM integration. Framework imports are lazy."""

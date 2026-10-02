@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Testing helpers: the conformance suite, the recipe-tracker double, and synthetic fixtures (design §6)."""
+"""Testing helpers: the conformance suite, the recipe-tracker double, and synthetic fixtures."""
 
 from nemotron_stitch.testing.conformance import ProjectorContractSuite
 from nemotron_stitch.testing.recipe import CheckpointTrackerFake

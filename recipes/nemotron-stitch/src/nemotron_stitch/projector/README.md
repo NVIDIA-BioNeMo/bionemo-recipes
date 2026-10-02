@@ -17,13 +17,12 @@ feature tensor and the LM's input embeddings.
   DTensor-safe save/load codec, and `FrozenProjector`, the model-detached
   frozen form used by the GRPO data plane.
 
-This is the code both original consumers had each written once; it exists so
-no third consumer writes it again.
+Applications reuse these contracts across training and serving.
 
 ## Upstream gaps
 
 None. These are package-owned contracts (the zoo, the index geometry, the
 artifact schema), not framework workarounds — per AGENTS.md they are the code
-that may remain here permanently. U-7 adoption will change *how* the
+that may remain here permanently. A runtime adopting AutoModel's public freeze configuration changes how the
 trainability policy is expressed to AutoModel (`freeze_config` selectors), but
 the policy itself is ours; see `automodel/README.md`.

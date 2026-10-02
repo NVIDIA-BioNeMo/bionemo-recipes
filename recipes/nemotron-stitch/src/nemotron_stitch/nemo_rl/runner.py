@@ -17,7 +17,7 @@
 
 Workers are named through NeMo RL's config-driven extension keys
 (``policy.worker_extension_cls_fqn`` and ``generation.worker_extension_cls_fqn``;
-adopted from U-5 / RL#3809). This bootstrap only registers the runtime
+provided by RL#3809). This bootstrap only registers the runtime
 environment each worker FQN resolves to — upstream validates that registration
 before allocating workers and raises on an unregistered FQN, so a config key
 without a matching registration fails closed instead of running the worker on

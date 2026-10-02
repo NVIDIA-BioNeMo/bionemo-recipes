@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Encoder registry, content-addressed cache, chunking, and pooling (design §7)."""
+"""Encoder registry, content-addressed cache, chunking, and pooling."""
 
 from nemotron_stitch.features.cache import (
     CacheBuilder,

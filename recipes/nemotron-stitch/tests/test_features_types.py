@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FeatureRef / EncoderOutput contracts and the Unit protocol (design §7)."""
+"""FeatureRef / EncoderOutput contracts and the Unit protocol."""
 
 from __future__ import annotations
 

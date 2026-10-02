@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
 import json
 from types import SimpleNamespace
 
@@ -108,6 +109,83 @@ def test_prepend_bos_if_needed_matches_policy_bos_prefix():
     )
 
 
+def test_encoder_rl_prompt_accepts_authored_marker_position(monkeypatch):
+    """One authored marker governs policy and rollout prompts alike."""
+    pytest.importorskip("nemo_rl", reason="NeMo RL prompt transport tests need the framework installed")
+    import nemo_rl.data.llm_message_utils as message_utils
+
+    from nemotron_stitch.nemo_rl import data as encoder_data
+
+    monkeypatch.setattr(
+        encoder_data,
+        "load_encoder_payload",
+        lambda _datum, _adapter: (torch.arange(6).reshape(2, 3), torch.arange(8).reshape(2, 4)),
+    )
+
+    def formatted_message_log(messages, tokenizer, *_args, **_kwargs):
+        count = messages[-1]["content"].count("<slot>")
+        return [
+            {
+                "role": "user",
+                "content": messages[-1]["content"],
+                "token_ids": torch.tensor([1, *([tokenizer.placeholder_token_id] * count), 2]),
+            }
+        ]
+
+    monkeypatch.setattr(message_utils, "get_formatted_message_log", formatted_message_log)
+
+    class _Tokenizer:
+        bos_token = "<bos>"
+        placeholder_token_id = 32
+
+        def convert_tokens_to_ids(self, _token):
+            return self.placeholder_token_id
+
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[-1]["content"]
+
+    common = {
+        "adapter": "sample",
+        "encoder_placeholder_token": "<slot>",
+        "encoder_start_token": "<start>",
+        "encoder_end_token": "<end>",
+        "task_name": "test",
+    }
+
+    embedded = encoder_data.encoder_rl_processor(
+        {"sample_id": "row-embedded", "question": "Before?\n{mm:sample}\nAfter", **common},
+        None,
+        _Tokenizer(),
+        max_seq_length=64,
+        idx=0,
+        add_bos=False,
+    )
+    # The policy prompt keeps the authored soft-token position, and the rollout
+    # prompt carries the generation sentinel there with no literal marker left.
+    assert [message["content"] for message in embedded["message_log"] if message["role"] == "user"] == [
+        "Before?\n<start><slot><slot><end>\nAfter"
+    ]
+    assert embedded["vllm_content"] == "Before?\n<sample>\nAfter"
+
+    plain = encoder_data.encoder_rl_processor(
+        {"sample_id": "row-plain", "question": "question", **common},
+        None,
+        _Tokenizer(),
+        max_seq_length=64,
+        idx=1,
+        add_bos=False,
+    )
+    # Marker-free questions retain the conventional modality-prefix layout.
+    assert plain["vllm_content"] == "<sample>\nquestion"
+
+    # The rollout payload is one modality item containing all soft tokens,
+    # not T separate items.
+    embedded_payload = embedded["vllm_multi_modal_data"]["sample"]
+    assert len(embedded_payload) == 1
+    assert torch.equal(embedded_payload[0], torch.arange(8).reshape(2, 4))
+    assert plain["vllm_multi_modal_data"]["sample"][0].shape == (2, 4)
+
+
 def test_variable_length_payloads_remain_logical_rows_and_materialize_flat(monkeypatch):
     pytest.importorskip("nemo_rl", reason="NeMo RL packing tests need the framework installed")
     from nemo_rl.data.llm_message_utils import batched_message_log_to_flat_message
@@ -191,7 +269,7 @@ def test_variable_length_payloads_remain_logical_rows_and_materialize_flat(monke
     materialized = flat.get_multimodal_dict(as_tensors=True)
     assert materialized["mm_features__sample"].shape == (14, 3)
     for row, value in enumerate(projected):
-        assert rows[row]["vllm_multi_modal_data"]["sample"] is value
+        assert rows[row]["vllm_multi_modal_data"]["sample"][0] is value
 
     training = BatchedDataDict(
         input_ids=flat["token_ids"],
@@ -218,7 +296,7 @@ def test_upstream_collators_and_formatter_preserve_projected_payload():
         "length": 2,
         "loss_multiplier": 1.0,
         "vllm_content": "<sample>\nquestion",
-        "vllm_multi_modal_data": {"sample": projected},
+        "vllm_multi_modal_data": {"sample": [projected]},
         "extra_env_info": {"sample_id": "row-0"},
         "idx": 0,
         "task_name": "sample",
@@ -227,7 +305,7 @@ def test_upstream_collators_and_formatter_preserve_projected_payload():
 
     for collate in (rl_collate_fn, eval_collate_fn):
         batch = collate([datum])
-        assert batch["vllm_multi_modal_data"][0]["sample"] is projected
+        assert batch["vllm_multi_modal_data"][0]["sample"][0] is projected
 
     prompt = format_prompt_for_vllm_generation(
         BatchedDataDict(
@@ -238,4 +316,10 @@ def test_upstream_collators_and_formatter_preserve_projected_payload():
         )
     )[0]
     assert prompt["prompt"] == datum["vllm_content"]
-    assert prompt["multi_modal_data"]["sample"] is projected
+    assert prompt["multi_modal_data"]["sample"] == [projected]
+    if importlib.util.find_spec("vllm"):
+        # One modality item holds the whole soft-token run; a bare
+        # rank-two tensor would count as T items and trip the item limit.
+        from vllm.multimodal.parse import EmbeddingItems
+
+        assert len(EmbeddingItems(prompt["multi_modal_data"]["sample"], "sample", 4)) == 1

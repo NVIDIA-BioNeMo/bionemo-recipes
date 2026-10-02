@@ -2,13 +2,15 @@
 # main + AutoModel r0.6.0). Same stage as sft.yaml with the LIGHTNING_30B
 # spec's values; the module names below are the native nemotron_v3
 # implementation's (model.layers.*.mixer.*).
-# One rank:
-#   python -m nemo_automodel.cli.app configs/sft-lightning.yaml --nproc-per-node 1
+# One rank (EP defaults to 8 below, so single-GPU runs override it):
+#   python -m nemo_automodel.cli.app configs/sft-lightning.yaml --nproc-per-node 1 \
+#     --distributed.ep_size=1
 # Eight ranks (8×H100 80 GB, expert-parallel; qualified 2026-09-03):
-#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft-lightning.yaml \
-#     --distributed.ep_size=8
-# (packed microbatch is 1; global batch 16 yields 2 accumulation steps at 8 ranks)
-#
+#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft-lightning.yaml
+# (packed microbatch is 1; global batch 16 yields 2 accumulation steps at 8
+# ranks — the qualified 2026-09-03 geometry; pass
+# --step_scheduler.global_batch_size=8 for the accumulation-free 8-rank
+# geometry. Multi-pack microbatches are unsupported by the packed collator.)
 recipe: nemotron_stitch.automodel.recipe.ProjectorFinetuneRecipe
 
 step_scheduler:
@@ -63,7 +65,7 @@ peft:
   #   - routed experts: AutoModel trains them as GroupedExpertsLoRA, which
   #     the pinned NeMo RL refit does not merge (U-29), and their merged
   #     export for serving needs Automodel#3834, which the pinned AutoModel
-  #     1814c6c9 predates (U-27);
+  #     1814c6c9 predates;
   #   - mixer.out_proj: the fused mamba training path passes its base weight
   #     directly to the scan kernel, so a LoRA wrapper is silently inert
   #     (U-30);
@@ -96,7 +98,7 @@ distributed:
   tp_size: 1
   cp_size: 1
   pp_size: 1
-  ep_size: 1
+  ep_size: 8
   sequence_parallel: false
   activation_checkpointing: false
 

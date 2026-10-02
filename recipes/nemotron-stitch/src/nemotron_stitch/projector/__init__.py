@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Projector zoo, named registry, scatter, and trainability (design §4)."""
+"""Projector zoo, named registry, scatter, and trainability."""
 
 from nemotron_stitch.projector.multimodal import MultimodalProjector
 from nemotron_stitch.projector.projectors import (

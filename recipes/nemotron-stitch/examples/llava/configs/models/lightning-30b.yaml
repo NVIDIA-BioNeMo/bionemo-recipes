@@ -14,7 +14,7 @@ policy:
     chat_template_kwargs:
       enable_thinking: false
     # The pinned artifact already carries the corrected Mistral regex; keep
-    # Transformers from re-patching it. Threaded by NeMo RL #3798 (U-1).
+    # Transformers from re-patching it. Threaded by NeMo RL #3798.
     tokenizer_kwargs:
       fix_mistral_regex: false
   hf_config_overrides:

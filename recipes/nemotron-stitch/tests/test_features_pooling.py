@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Coverage-weighted mean pooling to a soft-token count (design §7).
+"""Coverage-weighted mean pooling to a soft-token count.
 
 Width and cap are caller-supplied policy; these tests pin only the shape of
 the computation. The consumer's per-unit widths and default cap stay in the
-consumer (genome-research keeps its own wrapper with those locked values).
+consumer.
 """
 
 from __future__ import annotations

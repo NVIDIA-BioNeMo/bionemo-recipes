@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Scatter primitives for the flat index contract (design §3.2).
+"""Scatter primitives for the flat index contract.
 
 The canonical contract is flat: soft tokens ``[N, H_lm]`` and int64 indices
 into the flattened ``(B*S)`` sequence, with negative entries dropped. The
-dense ``[B, T]`` form (what ct-nemotron's collator emits) lowers to flat at
+dense ``[B, T]`` form  lowers to flat at
 the projector boundary via ``dense_to_flat``.
 """
 
@@ -165,12 +165,12 @@ def derive_flat_indices(
 ) -> dict[str, torch.Tensor]:
     """Derive canonical flat target positions from per-projector placeholder masks.
 
-    The flat companion to ``derive_indices`` for flat ``[N, H]`` payloads
-    (design §3.2): a projector's targets are its placeholder occurrences in
-    the flattened ``(B*S)`` sequence, in row-major order — the same order a
-    packed collator concatenates per-record features. The total slot count
-    must equal the projector's emitted soft-token count exactly, so a
-    truncated or over-long prompt fails loudly.
+        The flat companion to ``derive_indices`` for flat ``[N, H]`` payloads
+    : a projector's targets are its placeholder occurrences in
+        the flattened ``(B*S)`` sequence, in row-major order — the same order a
+        packed collator concatenates per-record features. The total slot count
+        must equal the projector's emitted soft-token count exactly, so a
+        truncated or over-long prompt fails loudly.
     """
     if set(placeholder_token_ids) != set(token_counts):
         raise ValueError(

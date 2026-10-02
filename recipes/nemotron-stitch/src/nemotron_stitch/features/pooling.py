@@ -17,7 +17,7 @@
 
 The pooling *width* (units per soft token) and the *cap* are encoder-policy
 inputs supplied by the caller — the package owns the shape of the
-computation, the consumer owns the values (design §7).
+computation, the consumer owns the values.
 """
 
 from __future__ import annotations

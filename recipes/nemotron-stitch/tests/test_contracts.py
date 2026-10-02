@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""contracts.py is a real module from Phase 0 on; pin its values."""
+"""contracts.py is a real module with stable contract values; pin its values."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from nemotron_stitch import contracts
 
 
 def test_schema_version_starts_at_one() -> None:
-    # A new counter for a new format (design §3.4); bumping it requires
+    # A new counter for a new format; bumping it requires
     # shipping a converter for the previous version in the same change.
     assert contracts.SCHEMA_VERSION == 1
 

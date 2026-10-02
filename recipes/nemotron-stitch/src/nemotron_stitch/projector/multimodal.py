@@ -13,10 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MultimodalProjector: the named projector registry (design §3.1–§3.3).
+"""MultimodalProjector: the named projector registry.
 
-Moved from ct-nemotron's ``conditioning/router.py``: same validation and
-dispatch, with the internals lowered to the flat index contract (design §3.2).
+Validation and dispatch use the flat index contract.
 One behavior is deliberately tightened: the old router's mixed mode (explicit
 indices for some adapters, placeholder derivation for others) dereferenced a
 None and crashed; here indices are either explicit for every projector or
@@ -43,7 +42,7 @@ from nemotron_stitch.projector.scatter import (
 
 
 class MultimodalProjector(nn.Module):
-    """The named projector registry, in either ownership mode (design §3.3).
+    """The named projector registry, in either ownership mode.
 
     ``projector_ownership="sidecar"`` (default): the host holds the registry
     outside its module tree (``object.__setattr__``), so framework state-dict
@@ -109,8 +108,8 @@ class MultimodalProjector(nn.Module):
         """Project features and scatter the soft tokens into explicit LM slots.
 
         Flat per-projector feature fields are the primary contract: features
-        are either flat ``[N, mm_hidden]`` (the canonical geometry, design
-        §3.2) or dense ``[B, T, mm_hidden]``. Each projector owns a distinct
+        are either flat ``[N, mm_hidden]`` (the canonical geometry) or dense
+        ``[B, T, mm_hidden]``. Each projector owns a distinct
         placeholder token id: target positions are derived per projector from
         ``input_ids`` and ``placeholder_token_ids``, routing by token
         identity, so segments of different projectors interleaved in one
@@ -208,7 +207,7 @@ class MultimodalProjector(nn.Module):
         occupied = torch.zeros(input_ids.shape[0] * input_ids.shape[1], dtype=torch.bool, device=input_ids.device)
         for name in sorted(soft_tokens):
             flat_indices, flat_tokens = flat[name]
-            # Negative entries are dropped by the scatter (design §3.2); keep
+            # Negative entries are dropped by the scatter; keep
             # them out of the cross-projector overlap bookkeeping as well.
             active_indices = flat_indices.to(device=input_ids.device, dtype=torch.long)
             active_indices = active_indices[active_indices.ge(0)]

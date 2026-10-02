@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Trainability policy and ProjectorAdamWConfig tests (design §3.5).
-
-Moved from genome-research's tests/automodel/test_trainability.py semantics,
-generalized to parameterized families; the sidecar cases are ct-nemotron's
-ownership mode (design §3.3).
-"""
+"""Parameter-family trainability and projector optimizer configuration."""
 
 from __future__ import annotations
 
@@ -76,7 +71,7 @@ def test_stage2_adds_lora():
 
 
 def test_stage2_with_frozen_projector():
-    # ct-nemotron's stage 2: LoRA only, projector frozen after warm start.
+    # Stage 2: LoRA only, projector frozen after warm start.
     model = _Model()
     configure_trainable_parameters(model, 2, policy=POLICY, train_projector=False)
     trainable = {name for name, p in model.named_parameters() if p.requires_grad}
@@ -199,7 +194,7 @@ def test_projector_adamw_requires_a_policy():
 
 
 def test_projector_adamw_stage2_frozen_projector():
-    # ct-nemotron's stage 2: LoRA only, projector frozen after warm start.
+    # Stage 2: LoRA only, projector frozen after warm start.
     model = _Model()
     config = ProjectorAdamWConfig(policy=POLICY, stage=2, train_projector=False)
     optimizers = config.build(model)

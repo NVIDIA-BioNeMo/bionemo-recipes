@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Out-of-tree architecture registration tests.
-
-Moved from ct-nemotron's tests/test_registry.py (ct-nemotron port Phase 3) with
-a dummy model class standing in for the consumer's architecture; the consumer
-keeps a slim wiring proof for its own class.
-"""
+"""Idempotent out-of-tree model registration against a registry double."""
 
 from __future__ import annotations
 

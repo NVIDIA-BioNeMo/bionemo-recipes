@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FeatureRef, EncoderOutput, and the Unit protocol (design §7).
+"""FeatureRef, EncoderOutput, and the Unit protocol.
 
 An encoder consumes a sequence of consumer-defined *elements* (the consumer
 owns the alphabet) addressed in *units*: the encoder-facing granularity that
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class Unit(Protocol):
-    """Element→unit conversion for a source sequence (design §7)."""
+    """Element→unit conversion for a source sequence."""
 
     @property
     def units_per_element(self) -> Fraction:

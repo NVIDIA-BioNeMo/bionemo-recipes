@@ -13,10 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""MultimodalProjector and MultimodalInputMixin tests. The registry cases moved
-from ct-nemotron's tests/test_conditioning_router.py; only the names changed
-(design §1.5). The sidecar-placement cases now exercise the package's mixin
-directly."""
+"""Flat multimodal forward inputs, ownership, placement, and validation."""
 
 from __future__ import annotations
 
@@ -64,7 +61,7 @@ def test_explicit_token_indices_are_an_optional_override():
 
 
 def test_flat_features_with_flat_indices_scatter_ragged_rows():
-    """The canonical contract (design §3.2): flat [N, C] features, flat [N] indices."""
+    """The canonical contract: flat [N, C] features, flat [N] indices."""
     registry = MultimodalProjector({"tokens": Mlp2xGeluProjector(3, 8, 6)})
     ids = torch.tensor([[32, 32, 1], [2, 32, 3]])
     text = torch.zeros(2, 3, 6)
@@ -427,9 +424,9 @@ def test_extract_mm_kwargs_pops_prefixed_fields():
 
 
 class TestModuleOwnership:
-    """projector_ownership=\"module\" (design §3.3): a registered, FSDP2-visible child.
+    """projector_ownership=\"module\": a registered, FSDP2-visible child.
 
-    genome-research owns this mode: its projector is an in-tree child that
+    In this mode the projector is an in-tree child that
     FSDP2 shards and its TP plumbing replicates, so the registry must behave
     like an ordinary submodule and fail closed on placement mismatches.
     """

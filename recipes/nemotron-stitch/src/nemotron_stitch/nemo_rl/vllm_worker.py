@@ -15,8 +15,7 @@
 
 """NeMo RL vLLM worker for the generic encoder modality.
 
-Moved from ct-nemotron (ct-nemotron port Phase 4). The consumer's vLLM plugin
-registration and architecture name are config-driven (``mm_plugin_callback``,
+The application's vLLM plugin registration and architecture name are config-driven (``mm_plugin_callback``,
 ``mm_architecture``) so the package holds no modality names.
 """
 
@@ -46,27 +45,49 @@ class ResidentVllmLifecycle:
 
 
 def require_generation_topology(config: dict[str, Any]) -> None:
-    """Allow qualified vLLM TP and colocated expert parallelism."""
+    """Keep encoder constraints while NeMo RL owns expert/data parallel ranks.
+
+    NeMo RL 4d969c93 configures external vLLM data-parallel actors when
+    EP exceeds TP. Replicated projected features need no separate transport
+    for that layout. Pipeline partitioning remains unsupported here.
+    """
     vllm = config.get("vllm_cfg") or {}
     dimensions = {
         name: int(vllm.get(name, 1))
         for name in ("tensor_parallel_size", "pipeline_parallel_size", "expert_parallel_size")
     }
-    if dimensions["tensor_parallel_size"] < 1:
-        raise ValueError(f"tensor_parallel_size must be positive: {dimensions}")
+    if any(value < 1 for value in dimensions.values()):
+        raise ValueError(f"parallel dimensions must be positive: {dimensions}")
     if dimensions["pipeline_parallel_size"] != 1:
         raise NotImplementedError(f"encoder generation does not support vLLM pipeline parallelism: {dimensions}")
-    expert_parallel_size = dimensions["expert_parallel_size"]
-    tensor_parallel_size = dimensions["tensor_parallel_size"]
-    if expert_parallel_size not in (1, tensor_parallel_size):
-        raise NotImplementedError(
-            f"encoder generation supports expert parallelism only when EP equals TP: {dimensions}"
-        )
     if config.get("keep_vllm_on_gpu"):
         if config.get("colocated", {}).get("enabled") is not True:
             raise ValueError("keep_vllm_on_gpu requires colocated.enabled=true")
         if vllm.get("async_engine"):
             raise ValueError("keep_vllm_on_gpu is incompatible with vllm_cfg.async_engine")
+    # U-70: vLLM 0.25.1 async scheduling stalls between request completion
+    # and the dummy-batch DP collectives on colocated external-DP engines
+    # (coordinate_batch_across_dp -> _synchronize_dp_ranks -> gloo
+    # all_reduce, surfacing as an 1800 s gloo recv timeout). Require the
+    # explicit synchronous pin so configs cannot inherit the vLLM default.
+    # Delete when the pinned vLLM fixes the completion -> dummy-batch
+    # collective stall at fused DP/EP>1.
+    ep = dimensions["expert_parallel_size"]
+    tp = dimensions["tensor_parallel_size"]
+    if ep > 1 and ep % tp:
+        raise NotImplementedError(
+            f"encoder generation requires expert parallel size to be divisible by tensor parallel size: {dimensions}"
+        )
+    external_dp_width = ep // tp
+    if external_dp_width > 1 and (config.get("colocated") or {}).get("enabled") is True:
+        vllm_kwargs = config.get("vllm_kwargs") or {}
+        if vllm_kwargs.get("async_scheduling") is not False:
+            raise ValueError(
+                "colocated generation with external DP width "
+                f"{external_dp_width} must pin "
+                "generation.vllm_kwargs.async_scheduling: false (U-70); got "
+                f"{vllm_kwargs.get('async_scheduling')!r}"
+            )
 
 
 def _merge_encoder_hf_overrides(

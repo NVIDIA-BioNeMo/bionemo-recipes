@@ -1,15 +1,19 @@
 # Stage 1 — alignment on the Lightning 30B target, upstream-main track
 # (NeMo RL main + AutoModel r0.6.0). Same stage as alignment.yaml with the
 # LIGHTNING_30B spec's values and native AutoModel implementation.
-# One rank:
-#   python -m nemo_automodel.cli.app configs/alignment-lightning.yaml --nproc-per-node 1
+# One rank (EP defaults to 8 below, so single-GPU runs override it):
+#   python -m nemo_automodel.cli.app configs/alignment-lightning.yaml --nproc-per-node 1 \
+#     --distributed.ep_size=1
 # Eight ranks (8×H100 80 GB, expert-parallel; qualified 2026-09-03):
-#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment-lightning.yaml \
-#     --distributed.ep_size=8
-# EP=8 shards the 128 routed experts (16/rank) and FSDP2 shards the rest;
-# ~13.6 GiB/rank peak vs ~75 GiB single-GPU. No batch override: the packed
-# microbatch is 1, so global batch 16 yields 2 accumulation steps at 8 ranks.
-#
+#   torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment-lightning.yaml
+# EP=8 is the default 8×H100 topology: it shards the 128 routed experts
+# (16/rank) and FSDP2 shards the rest (~13.6 GiB/rank vs ~75 GiB
+# single-GPU), and it removes the expert weights from the per-microbatch
+# FSDP2 all-gather.
+# Batch geometry: the packed microbatch is 1, so global batch 16 yields 2
+# accumulation steps at 8 ranks (the qualified 2026-09-03 geometry); pass
+# --step_scheduler.global_batch_size=8 for the accumulation-free 8-rank
+# geometry. Multi-pack microbatches are unsupported by the packed collator.
 recipe: nemotron_stitch.automodel.recipe.ProjectorFinetuneRecipe
 
 step_scheduler:
@@ -68,7 +72,7 @@ distributed:
   tp_size: 1
   cp_size: 1
   pp_size: 1
-  ep_size: 1
+  ep_size: 8
   sequence_parallel: false
   activation_checkpointing: false
 

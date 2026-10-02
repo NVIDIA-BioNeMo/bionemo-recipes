@@ -13,13 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ProjectorAdamWConfig: trainability applied at the last safe point (design §3.5).
+"""ProjectorAdamWConfig: trainability applied at the last safe point.
 
-Generalized from genome-research's ``automodel/optim.py`` (at
-``294e7372b542f4eb12d4924f066b6828a7e3c14f``): the trainability policy is
-applied inside ``build`` — after PEFT freezing, before optimizer construction —
+The trainability policy is applied inside ``build`` — after PEFT freezing, before optimizer construction —
 and validated by a deterministic manifest. This is the local alternative to
-upstream U-7 (an AutoModel pre-optimizer hook).
+a public AutoModel pre-optimizer hook.
 
 Consumers on older AutoModel revisions may still need a different optimizer
 seam. The current fixed-geometry applications use the typed
@@ -105,7 +103,7 @@ class ProjectorAdamWConfig(_AdamWConfig):
         # asdict(self) into torch.optim.AdamW, so this subclass's own fields
         # (policy, stage, ...) would leak in as unknown kwargs. Restrict the
         # mapping to the base class's fields; upstream already guarantees those
-        # are valid AdamW kwargs. Delete when U-7 is adopted.
+        # are valid AdamW kwargs. Delete when the runtime exposes a public pre-optimizer hook.
         base_fields = {field.name for field in fields(_AdamWConfig)}
         kwargs = {key: value for key, value in asdict(self).items() if key in base_fields}
         # r0.6.0 added OptimizerConfig.param_group_overrides: a base field, but

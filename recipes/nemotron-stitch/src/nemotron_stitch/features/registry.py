@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validated, deterministic encoder registry (design §7).
+"""Validated, deterministic encoder registry.
 
 An :class:`EncoderSpec` pins one encoder configuration by an immutable
 ``(repository, revision, implementation_revision, layer)`` identity; an
@@ -117,7 +117,7 @@ class EncoderRegistry:
     schema_version: int
     policy: Mapping[str, Any]
     encoders: tuple[EncoderSpec, ...]
-    # Consumer policy predicates (design §7); excluded from equality so two
+    # Consumer policy predicates; excluded from equality so two
     # loads of the same payload compare equal regardless of validator binding.
     validators: tuple[RegistryValidator, ...] = field(default=(), compare=False)
 

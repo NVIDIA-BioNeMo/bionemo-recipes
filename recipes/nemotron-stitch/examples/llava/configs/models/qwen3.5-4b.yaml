@@ -26,7 +26,7 @@ policy:
   dtensor_cfg:
     automodel_kwargs: {}
     lora_cfg:
-      # Warm start from the SFT compact-LoRA adapter (U-8).
+      # Warm start from the SFT compact-LoRA adapter.
       restore_from: outputs/qwen-sft/checkpoints/LATEST/model
       target_modules:
         - "model.language_model.layers.*.self_attn.q_proj"

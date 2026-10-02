@@ -89,3 +89,48 @@ def test_rl_processor_delegates_to_the_public_renderer():
         )
         == "<s><p><p><p><e>\nQuestion?"
     )
+
+
+def test_rl_processor_preserves_supplied_marker_position():
+    # Questions may author the soft-token position themselves.
+    from nemotron_stitch.nemo_rl.data import _render_policy_content
+
+    assert (
+        _render_policy_content(
+            "Before?\n{mm:image}\nAfter",
+            2,
+            adapter="image",
+            placeholder_token="<p>",
+            start_token="<s>",
+            end_token="<e>",
+        )
+        == "Before?\n<s><p><p><e>\nAfter"
+    )
+
+
+def test_rl_processor_rejects_wrong_projector_marker():
+    from nemotron_stitch.nemo_rl.data import _render_policy_content
+
+    with pytest.raises(ValueError, match="found 0"):
+        _render_policy_content(
+            "{mm:video}\nQuestion?",
+            3,
+            adapter="image",
+            placeholder_token="<p>",
+            start_token="<s>",
+            end_token="<e>",
+        )
+
+
+def test_rl_processor_rejects_duplicate_supplied_markers():
+    from nemotron_stitch.nemo_rl.data import _render_policy_content
+
+    with pytest.raises(ValueError, match="found 2"):
+        _render_policy_content(
+            "{mm:image}\nQuestion?\n{mm:image}",
+            3,
+            adapter="image",
+            placeholder_token="<p>",
+            start_token="<s>",
+            end_token="<e>",
+        )

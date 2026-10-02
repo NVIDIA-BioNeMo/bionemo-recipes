@@ -13,9 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Scatter primitive tests. The first two moved from ct-nemotron's
-tests/test_conditioning.py, adapted from the dense helper to
-dense_to_flat + scatter_flat; the rest cover the flat contract (design §3.2)."""
+"""Dense-to-flat conversion and validated scatter behavior."""
 
 from __future__ import annotations
 

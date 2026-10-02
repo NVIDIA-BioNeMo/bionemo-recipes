@@ -36,7 +36,7 @@ checkpointing:
 
 policy:
   model_registry_callback: llava_qwen.register_models
-  # Config-driven worker extension FQNs (U-5); see grpo.yaml.
+  # Config-driven worker extension FQNs; see grpo.yaml.
   worker_extension_cls_fqn: nemotron_stitch.nemo_rl.policy.EncoderDTensorPolicyWorkerV2
   keep_policy_on_gpu: true
   initial_adapter_expected_config:
@@ -122,6 +122,9 @@ policy:
       max_num_seqs: ${policy.generation_batch_size}
       kv_cache_memory_bytes: 4294967296
       enable_mm_embeds: true
+      # U-70: vLLM 0.25.1's async_scheduling default stalls colocated
+      # external-DP engines in the drain tail; pin the synchronous path.
+      async_scheduling: false
     colocated:
       enabled: true
 

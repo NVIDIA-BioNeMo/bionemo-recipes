@@ -25,7 +25,7 @@ the point of the package, and a single-projector renderer is exactly the API
 that would need replacing the first time two encoders share one prompt. The
 caller supplies a template carrying one marker per projector that received
 features — ``{mm:<name>}`` — so interleaved prompts render in text order while
-scatter routing stays by token identity (design §3.1). A single projector is
+scatter routing stays by token identity. A single projector is
 the degenerate case.
 
 The renderer emits text, not token ids: placeholder-id checks stay in the RL

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""build_mm_plugin factory surface (design §3.6). Framework imports stay lazy."""
+"""build_mm_plugin factory surface. Framework imports stay lazy."""
 
 from pathlib import Path
 
@@ -40,7 +40,7 @@ def test_encode_mode_validates_its_callback_set():
 
     from nemotron_stitch.vllm.plugin import build_mm_plugin
 
-    # Encode mode landed in genome-research port Phase 5; the callback set is
+    # Encode mode requires a complete callback set; it is
     # validated per parameter. Class-building cases live in
     # tests/test_vllm_encode_plugin.py, which needs vLLM installed.
     with pytest.raises(ValueError, match="encode_model_cls"):

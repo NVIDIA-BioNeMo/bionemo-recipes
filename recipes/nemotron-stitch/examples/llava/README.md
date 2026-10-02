@@ -16,7 +16,44 @@ backend. Both keep Qwen's built-in vision tower frozen and unused.
    the excluded ones (the LLaVA finetune stage); and
 3. **GRPO** — warm-start SFT's projector and LoRA adapter and keep updating
    only the adapter, so the whole recipe carries a single adapter, never a
-   merged copy.
+   merged copy. The opt-in
+   [`grpo-trainable-projector.yaml`](configs/grpo-trainable-projector.yaml)
+   variant trains the projector jointly with the adapter instead; see
+   [the variant's contract](#grpo-with-a-trainable-projector).
+
+### DPO preference demonstration
+
+The optional [`configs/dpo.yaml`](configs/dpo.yaml) exercises preference
+training with the same frozen CLIP features and SFT projector/LoRA handoff.
+It makes deterministic chosen/rejected pairs from the CLEVR manifest: the
+recorded numeric answer is chosen, and the next integer is rejected. This is
+an integration demonstration, not a preference-quality experiment. After data
+preparation and SFT, run from `/opt/llava-example`:
+
+```bash
+python -c 'from llava_example import prepare_dpo_preferences; print(prepare_dpo_preferences())'
+python run_dpo.py --config configs/dpo.yaml
+```
+
+[`run_dpo.py`](run_dpo.py) selects the package's U-54 DPO launcher, which calls
+NeMo RL's public `setup_preference_data(..., processor_fn=...)` and its
+unchanged DPO setup and training functions. The package processor loads one raw feature tensor per
+pair, attaches it independently to the chosen and rejected message logs, and
+rejects a branch whose placeholder count differs from the feature count. The
+stock preference collator interleaves the branches and carries their packed
+feature tensors in that order. The feature loader is a callback: it can read a
+cache, run a local encoder, or call a service, provided it returns a nonempty
+`[tokens, hidden]` tensor and keeps the two branches aligned with the prompt.
+An online source should be pinned and deterministic across reference and
+policy passes.
+
+NeMo RL already has a VLM preference processor for supported image processors
+and a multimodal-capable DPO collator. Its pinned DPO launcher chooses the text
+processor and has no configuration key to select the VLM processor or an
+external one. U-54 tracks that launcher seam; the LLaVA entry point is
+temporary until NeMo RL exposes processor selection. The two-pair data path
+has been checked against NeMo RL `4d969c93`; a DPO model update has not yet
+been qualified for this example.
 
 Serving is part of the design. GRPO's rollout engine is plain vLLM: at every
 update the current adapter is merged into the base weights and refit into the
@@ -139,8 +176,71 @@ docker exec llava-example python -m nemotron_stitch.nemo_rl.runner --config conf
 The SFT checkpointer maintains `checkpoints/LATEST`, which the GRPO config reads
 directly; there is no checkpoint path to copy by hand.
 
-The single-GPU GRPO configs use the same measured residency policy as the
-KERMT recipe: policy and vLLM base weights stay in HBM after the mandatory
+### GRPO with a trainable projector
+
+The default stage 3 keeps the projector frozen. The opt-in
+[`configs/grpo-trainable-projector.yaml`](configs/grpo-trainable-projector.yaml)
+overlay trains it jointly with the adapter:
+
+```bash
+docker exec llava-example python -m nemotron_stitch.nemo_rl.runner \
+  --config configs/grpo-trainable-projector.yaml
+```
+
+The projector must be module-owned on this path (`mm_projector_ownership: module`): sidecar parameters live outside the module tree, so DCP cannot save
+their optimizer state and FSDP2 never manages their gradients. The
+worker re-enables gradients after AutoModel's post-wrap PEFT freeze, appends
+the projector to the policy optimizer as one group (`policy.projector_lr`,
+1e-5 here — SFT trained the projector at 1e-4, the adapter trains at 1e-6),
+and keeps the audit fail-closed: nothing outside the adapter and the projector
+may train. The optimizer's LR schedule must be the constant-only passthrough
+(`ConstantLR(factor: 1.0)`, what every shipped GRPO config carries): NeMo RL
+builds the scheduler before the worker extension runs, so any other schedule
+either rescales the projector group wrongly or crashes at a milestone, and
+the worker rejects it at construction (U-65) instead of mid-run. The trainable
+projector is mesh-agnostic within the package's admitted topologies (TP=1,
+CP=1, and not both `dp_replicate_size` and `expert_parallel_size` above one —
+the combined replicate×EP mesh is inexpressible on fused-EP layouts on this
+stack, U-66): expert-parallel meshes were qualified at
+EP=8 on the Lightning-30B target ([`configs/grpo-lightning-trainable-ep8.yaml`](configs/grpo-lightning-trainable-ep8.yaml),
+8×H100, 2026-10-01: three finite updates with monotone projector drift and a
+nonzero KL leash through an EP=8 policy mesh and an EP=8 colocated vLLM
+rollout, warm-started from the EP=8 Lightning alignment/SFT chain), and
+data-replicated HSDP meshes were qualified on the 4B control ([`configs/grpo-trainable-projector-hsdp.yaml`](configs/grpo-trainable-projector-hsdp.yaml),
+dp_replicate 4 × dp_shard 2, 2026-10-01). AutoModel switches to HSDP at
+dp_replicate > 1, so FSDP2 all-reduces projector gradients across replicas;
+the worker enforces that every update starts from bit-identical replicas —
+each rank's drift is all-gathered and any divergence fails the step closed
+— which is also why EP>1 and HSDP meshes share the shard-aware drift and
+KL-reference paths.
+
+Each checkpoint carries the trained projector beside the policy shards as the
+package's portable artifact (`<step>/policy/weights/mm_projector/`), and the
+projector's Adam moments ride the ordinary optimizer state save keyed by FQN.
+Resume restores both — the projector's KL reference stays anchored to the
+warm start across resumes, mirroring NeMo RL's own anchor-across-resumes
+policy for the language model, so a resume never grants a fresh drift budget.
+A frozen-stage checkpoint tree resumed into this variant (it keeps a distinct
+one) has no projector sidecar and the run says so:
+`ENCODER_POLICY_PROJECTOR_RESUME projector_state: warm_start`. The next
+stage — DPO warm start, serving, or another GRPO run — consumes the
+checkpoint's `mm_projector/` directory directly as `projector_artifact_path`.
+
+Two loss-side changes come with it. First, the rollout data plane still
+embeds prompts through the SFT-artifact sidecar, one gradient step behind the
+trainable projector; vLLM scores its samples under exactly the embeddings it
+sampled with, so the unforced importance ratio (`force_on_policy_ratio: false`) absorbs the projector drift instead of assuming the stale sampling
+distribution equals the current one. Second, the KL reference is anchored to
+the warm-started projector (the worker patches NeMo RL's reference snapshot,
+which is captured before the artifact load), so a nonzero
+`reference_policy_kl_penalty` measures real drift including the projector —
+relevant because earlier projector+LoRA runs surfaced runaway projector drift
+only through a KL spike. The worker logs `ENCODER_PROJECTOR_DRIFT` (relative
+L2 against the warm start) before every update as the direct signal; watch it
+alongside NeMo RL's reported KL.
+
+The single-GPU GRPO configs use a resident-weight policy:
+policy and vLLM base weights stay in HBM after the mandatory
 startup handoff, vLLM gets an explicit 4 GiB KV cache, and synchronous
 one-update rollouts use `force_on_policy_ratio` instead of recomputing current
 policy log-probabilities. Each rollout batch is submitted to vLLM whole. The
@@ -260,25 +360,56 @@ globally tighter bins.
 > On an 8×H100 80 GB node (x86_64), alignment and SFT run expert-parallel
 > across all eight GPUs — EP=8 shards the 128 routed experts (16/rank) and
 > FSDP2 shards the rest, for ~13.6/~12.8 GiB per-rank peaks (qualified
-> 2026-09-03, same configs, CLI overrides only):
+> 2026-09-03; EP=8 is now the config default, so no CLI override is needed):
 >
 > ```bash
-> docker exec llava-example torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment-lightning.yaml \
->   --distributed.ep_size=8
-> docker exec llava-example torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft-lightning.yaml \
->   --distributed.ep_size=8
+> docker exec llava-example torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment-lightning.yaml
+> docker exec llava-example torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft-lightning.yaml
 > ```
 >
-> (No batch override needed there: the packed microbatch is 1, so the global
-> batch of 16 yields 2 accumulation steps at 8 ranks.)
+> (Single-GPU runs now pass `--distributed.ep_size=1` to override the EP=8
+> default. Batch geometry: the packed microbatch is 1, so the global batch of
+> 16 yields 2 accumulation steps at 8 ranks — pass
+> `--step_scheduler.global_batch_size=8` for the accumulation-free 8-rank
+> geometry. Multi-pack microbatches are unsupported by the packed collator.)
 >
-> Lightning GRPO does not fit on 80 GB cards: NeMo RL loads the policy with
-> fp32 master weights and the package's sidecar policy is qualified for
-> exactly one rank, so a 30B one-rank policy needs ≥141 GB HBM (measured
-> OOM at ~77 GiB during init where a BF16 load peaks at 58.8 GiB; see
-> `docs/upstream-gaps.md`). Multi-rank policy (EP/TP) is the
-> module-ownership path owned by consumer workers (genome-research), not the
-> example.
+> The default sidecar Lightning GRPO policy needs more memory than an 80 GB
+> GPU provides. For an eight-H100 module-owned policy, use
+> [`configs/grpo-lightning-trainable-ep8.yaml`](configs/grpo-lightning-trainable-ep8.yaml)
+> and its documented projector handoff.
+
+### Projected-payload smoke check
+
+With the downloaded base snapshot available at
+`artifacts/models/nemotron-nano-4b-bf16`, run this from `/opt/llava-example`
+inside the example container:
+
+```bash
+/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker/bin/python \
+  scripts/qualify_vllm_projected.py
+```
+
+The probe generates from random projected embeddings and checks that invalid
+feature widths and excessive token counts are rejected. `VLLM-PROJECTED-OK`
+indicates the payload checks passed; this probe does not measure model quality.
+
+## Optional candidate image
+
+The default Dockerfile uses the pinned, unmodified NeMo RL stack. To test the
+open U-41 memory fixes, build the optional overlay after building `llava-example`:
+
+```bash
+docker build -f examples/llava/Dockerfile.candidates \
+  --build-arg CANDIDATE_IMAGE=llava-example \
+  -t llava-example:rl41-candidates .
+```
+
+Run this command from `recipes/nemotron-stitch`. The overlay applies the
+[training logprob chunking PR](https://github.com/NVIDIA-NeMo/RL/pull/4114) and
+[FSDP output precision PR](https://github.com/NVIDIA-NeMo/RL/pull/4115).
+It is a candidate stack with separate qualification requirements; it does not
+change the default CI image. Delete each patch layer when the runtime pin
+includes that fix.
 
 ## Distributed Training
 

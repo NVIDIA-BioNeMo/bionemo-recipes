@@ -13,14 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ProjectorRecipeMixin tests.
-
-Moved from ct-nemotron's tests/test_automodel_recipe.py (ct-nemotron port
-Phase 3); the AutoModel recipe surface is faked rather than imported so the
-package suite stays framework-free (design §3.7). The optimizer-construction
-seam remains available for consumers on other framework revisions. The shared
-typed-config recipe used by feature-backed applications is package-owned.
-"""
+"""Projector lifecycle and optimizer wiring against AutoModel recipe doubles."""
 
 from __future__ import annotations
 
@@ -455,7 +448,7 @@ def test_require_one_rank():
         require_one_rank(2, "sidecar export")
 
 
-# -- ProjectorSidecarState: the U-7 checkpoint path ---------------------------
+# -- ProjectorSidecarState: native checkpoint path ---------------------------
 
 
 def test_sidecar_state_fails_closed_before_bind():
@@ -556,7 +549,7 @@ def test_plain_mapping_resolves_omegaconf_configs():
     assert plain_mapping(omegaconf.OmegaConf.create({"a": "${b}", "b": 3})) == {"a": 3, "b": 3}
 
 
-# -- module ownership (genome-research port Phase 4e) -------------------------
+# -- module ownership  -------------------------
 
 from nemotron_stitch.automodel.recipe import (  # noqa: E402
     resolve_initialization_artifact,
@@ -778,14 +771,14 @@ def test_resolve_initialization_artifact_precedence(tmp_path):
     )
     # Stage 2 without a bridge artifact fails closed, naming the config key.
     # Fresh checkpoint dirs: the LATEST artifact above would win precedence.
-    with pytest.raises(FileNotFoundError, match="Stage 2 requires dna\\.stage1_artifact"):
+    with pytest.raises(FileNotFoundError, match="Stage 2 requires projector\\.stage1_artifact"):
         resolve_initialization_artifact(
             checkpoint_dir=tmp_path / "stage2-checkpoints",
             restore_from=None,
             initial_artifact=None,
             stage1_artifact=None,
             stage=2,
-            stage1_artifact_key="dna.stage1_artifact",  # gitleaks:allow
+            stage1_artifact_key="projector.stage1_artifact",  # gitleaks:allow
         )
     with pytest.raises(FileNotFoundError, match="initialization artifact is absent"):
         resolve_initialization_artifact(

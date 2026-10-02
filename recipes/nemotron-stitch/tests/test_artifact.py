@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Artifact schema and codec tests (design §3.4)."""
+"""Artifact schema and codec tests."""
 
 from __future__ import annotations
 

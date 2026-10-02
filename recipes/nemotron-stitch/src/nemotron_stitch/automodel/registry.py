@@ -15,10 +15,9 @@
 
 """Idempotent out-of-tree architecture registration and aliases.
 
-Moved from ct-nemotron's ``model/registry.py`` (ct-nemotron port Phase 3),
-generalized from the conditioned-Omni architecture to any ``(name, class)``
-pair. Holds the private ``ModelRegistry`` import that upstream U-2 deletes —
-see docs/upstream-gaps.md.
+Registers any ``(name, class)`` pair using the registry available at the
+pinned AutoModel revision. Delete the private import when the runtime adopts
+public out-of-tree registration.
 """
 
 from __future__ import annotations
@@ -31,15 +30,14 @@ def register_models(architecture: str, model_cls: type, registry: Any | None = N
 
     Re-registering the same class under the same name is a no-op; a
     conflicting registration fails closed. Returns ``False`` when AutoModel is
-    not installed, so data-only environments can still import consumer modules
-    (lazy framework import, design §3.7).
+    not installed, so data-only environments can still import consumer modules.
     """
     if registry is None:
         try:
             # NeMo AutoModel 24b47e856263d313b942f0ed666c63fff83306b4 resolves
             # architectures through this private registry and has no public
             # out-of-tree architecture registration hook. Delete when upstream
-            # U-2 is adopted.
+            # public out-of-tree registration is available in the runtime.
             from nemo_automodel._transformers.registry import ModelRegistry
         except ModuleNotFoundError:
             return False

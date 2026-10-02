@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Replicated-projector TP tests (design §3.3).
-
-Moved from genome-research's tests/automodel/test_tp_parity.py in its port
-Phase 4d, with generic attribute names and the NemotronH specifics dropped;
-the consumer keeps the CUDA variant of the parity case as its wiring gate.
-"""
+"""Replicated-projector tensor-parallel behavior with synthetic model doubles."""
 
 from __future__ import annotations
 

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The projector sidecar artifact (design §3.4).
+"""The projector sidecar artifact.
 
 One format with an explicit format discriminator: readers dispatch on
 ``MANIFEST_FORMAT``, never on a bare integer, because a legacy consumer schema

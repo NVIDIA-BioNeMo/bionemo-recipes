@@ -13,4 +13,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""NeMo AutoModel integration (design §4). Framework imports are lazy (design §3.7)."""
+"""NeMo AutoModel integration. Framework imports are lazy."""

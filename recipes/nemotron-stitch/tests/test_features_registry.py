@@ -107,7 +107,7 @@ def test_consumer_predicates_are_the_only_config_count_or_overlap_locks():
     registry = EncoderRegistry.from_dict(_registry_dict(count=1, overlap=64))
     assert len(registry.encoders) == 1
 
-    # ...consumers supply them as validators (design §7).
+    # ...consumers supply them as validators.
     def locked_policy(candidate: EncoderRegistry) -> None:
         if len(candidate.encoders) != 23:
             raise ValueError(f"primary registry must contain 23 configs, got {len(candidate.encoders)}")

@@ -13,7 +13,7 @@ policy:
     chat_template_kwargs:
       enable_thinking: false
     # The pinned artifact already carries the corrected Mistral regex; keep
-    # Transformers from re-patching it. Threaded by NeMo RL #3798 (U-1).
+    # Transformers from re-patching it. Threaded by NeMo RL #3798.
     tokenizer_kwargs:
       fix_mistral_regex: false
     use_processor: false
@@ -21,8 +21,10 @@ policy:
     architectures: [LlavaExampleNemotronForCausalLM]
     # GRPO policy ownership is sidecar: the package's encoder workers
     # materialize and load it, one rank per cluster. Same host class, one
-    # config key different from alignment/SFT. GRPO updates LoRA only; the
-    # encoder policy worker audits mm_projector_trainable: false.
+    # config key different from alignment/SFT. The default stage keeps the
+    # projector frozen; the grpo-trainable-projector.yaml overlay switches to
+    # module ownership and mm_projector_trainable: true, and the policy worker
+    # validates both contracts against this same mapping.
     mm_projector_ownership: sidecar
     mm_projector_trainable: false
     mm_projectors:
@@ -41,7 +43,7 @@ policy:
   dtensor_cfg:
     automodel_kwargs: {}
     lora_cfg:
-      # Warm start from the SFT compact-LoRA adapter (U-8).
+      # Warm start from the SFT compact-LoRA adapter.
       restore_from: outputs/sft/checkpoints/LATEST/model
       # Stage-2 targets with the Hub module prefix; sft.yaml documents the
       # exclusions. Explicit names, because all-linear could capture

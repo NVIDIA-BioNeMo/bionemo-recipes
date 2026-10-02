@@ -15,7 +15,7 @@
 
 """Replicated projector under tensor parallelism, and TP×EP composition.
 
-A module-owned projector (design §3.3) sits outside the LM's sharded
+A module-owned projector sits outside the LM's sharded
 architecture plan: FSDP2 shards it, TP leaves it replicated, and AutoModel's
 per-architecture plans do not know it exists. This module owns the protocol
 that keeps those replicas bit-identical — one broadcast after materialization,
@@ -36,9 +36,6 @@ Two framework workarounds live here, both against AutoModel
   generic path with TP disabled. Delete when AutoModel exposes a TP×EP
   composition hook.
 
-Lifted from genome-research's ``automodel/{model,registry}.py`` in its port
-Phase 4d, parameterized by the projector attribute names and the consumer's
-TP-plan callback.
 """
 
 from __future__ import annotations

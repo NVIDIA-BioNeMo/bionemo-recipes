@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""build_mm_plugin(mode="encode") tests (design §3.6).
+"""build_mm_plugin(mode="encode") tests.
 
 vLLM is absent from the package's base CI env, so the class-building cases
 skip there and run in a consumer image; the payload-shape helper is pure

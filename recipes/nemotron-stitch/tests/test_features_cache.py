@@ -16,10 +16,8 @@
 """Content-addressed feature cache: frozen contract hash, atomic publish, resume.
 
 ``cache_id()`` is ``sha256_json(asdict(contract))``; the pinned digests below
-lock the field set, field order, and JSON serialization against the pre-move
-genome-research implementation (the same values are asserted by the consumer's
-``tests/test_conditioning_cache_contract.py``). A changed digest invalidates
-every published cache directory and is forbidden (port plan Phase 3).
+lock the field set, field order, and JSON serialization. A changed digest
+invalidates every published cache directory.
 """
 
 from __future__ import annotations
@@ -51,7 +49,7 @@ CONTRACT = CacheContract(
     representative_policy="longest-v1",
 )
 
-# Pinned against nemotron_dna.conditioning.cache at genome-research f0e2557.
+# Frozen cache hash compatibility values.
 EXPECTED_CACHE_ID = "84dfe9f4fd94151a77e3924705bfa46ce173bb6a77132a883ca39827252cb268"
 EXPECTED_ENTRY_KEY = "df8626e389dcc36b24bebf65e3cb394eca00b1a4defc04adeea97f854baaec6f"  # gitleaks:allow
 

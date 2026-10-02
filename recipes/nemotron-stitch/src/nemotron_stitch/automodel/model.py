@@ -15,7 +15,7 @@
 
 """The multimodal host contract: input mixin, ownership modes, host factory.
 
-One home for the three pieces a host model needs (design §3.1, §3.3):
+One home for the three pieces a host model needs:
 ``MultimodalInputMixin`` carries the flat forward-kwarg contract and the
 cooperative embedding-boundary forward bridge; ``_init_mm_projector``
 constructs the projector registry in either ownership mode; and
@@ -23,7 +23,7 @@ constructs the projector registry in either ownership mode; and
 into a registered architecture without copying any of the base model's
 constructor, forward body, generation, or checkpoint code.
 
-Moved from ct-nemotron's ``model/omni.py`` (design §3.1). The host model class
+The host model class
 provides ``self.config`` and a text embedder — ``self.language_model`` whose
 ``get_input_embeddings()`` is used, falling back to the host itself so a plain
 ``*ForCausalLM`` host also works.
@@ -69,7 +69,7 @@ def _exclude_project_state_from_base_checkpoint(
     adapter = getattr(model, "state_dict_adapter", None)
     if adapter is None:
         return
-    # U-10: AutoModel 1814c6c93a66b9d59d254960ef6a99a64249b671 has
+    # AutoModel 1814c6c93a66b9d59d254960ef6a99a64249b671 has
     # allow_checkpoint_key_subset in Checkpointer.load_model, but its public
     # base-model load never forwards it. Reuse the family adapter it does call
     # and omit freshly initialized project-owned parameters from that load.
@@ -90,7 +90,7 @@ class MultimodalInputMixin:
 
     Both AutoModel's ``filter_forward_kwargs`` and NeMo RL's
     ``_accepted_forward_kwargs`` pass the batch through unchanged when the
-    model's forward declares ``**kwargs`` (ct-nemotron finding F1), so
+    model's forward declares ``**kwargs``, so
     ``mm_features__<name>`` fields reach the model with no upstream change.
     """
 
@@ -135,13 +135,13 @@ class MultimodalInputMixin:
             # trainability policy owns requires_grad there.
             projector.requires_grad_(False)
         if ownership == OWNERSHIP_MODULE:
-            # Module ownership (genome-research, design §3.3): an ordinary
+            # Module ownership: an ordinary
             # registered submodule, so FSDP2/DTensor wrapping, the host's
             # initialize_weights extension, and the trainability policy all
             # see it. Placement is owned by that wrapping.
             self.mm_projector = projector
             return
-        # Sidecar ownership (ct-nemotron L-2): held outside the module tree, so
+        # Sidecar ownership: held outside the module tree, so
         # framework state-dict conversion, weight initialization, and PEFT
         # freezing never see it. Serialization, provenance, and device
         # placement are owned by the artifact codec and the recipe/policy
@@ -302,7 +302,7 @@ def build_multimodal_host(
         # match). The checkpoint load fills every base tensor; only the
         # projector needs reset. A consumer/AutoModel-native override still
         # delegates. Initializing the added projector remains the out-of-tree
-        # model's responsibility (U-11).
+        # model's responsibility.
         base_initialize_weights = None
     base_signature = inspect.signature(base_cls.__init__)
     base_accepts_kwargs = any(
@@ -427,9 +427,9 @@ def build_cp1_packed_multimodal_host(
 def materialize_mm_projector(model, device=None, dtype=None) -> MultimodalProjector:
     """Place the sidecar-held projector registry on the model device and initialize it.
 
-    The registry is held outside the module tree (sidecar ownership, design
-    §3.3), so AutoModel's meta construction and device placement never touch
-    it: its parameters remain on ``meta`` after ``from_pretrained``.
+    The registry is held outside the module tree (sidecar ownership), so
+    AutoModel's meta construction and device placement never touch it:
+    its parameters remain on ``meta`` after ``from_pretrained``.
     Materialize them on the model device (defaulting to the first base
     parameter) before any forward or sidecar load.
     """

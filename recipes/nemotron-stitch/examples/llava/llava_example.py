@@ -283,6 +283,44 @@ def prepare_cli(argv: list[str] | None = None) -> int:
     return 0
 
 
+def prepare_dpo_preferences(
+    manifest_path: str | Path = "outputs/data/manifest-grpo-train.jsonl",
+    output_path: str | Path = "outputs/data/preferences-llava.jsonl",
+    *,
+    cache_root: str = "outputs/data/feature-cache",
+) -> int:
+    """Make a small, deterministic preference demonstration from cached CLEVR rows."""
+    rows = [json.loads(line) for line in Path(manifest_path).read_text().splitlines() if line.strip()]
+    if not rows:
+        raise ValueError("DPO demonstration manifest is empty")
+    preferences = []
+    for row in rows:
+        match = re.fullmatch(r"<answer>(-?\d+)</answer>", row["target"])
+        if match is None:
+            raise ValueError(f"DPO demonstration requires a CLEVR numeric answer: {row['sample_id']}")
+        wrong = int(match.group(1)) + 1
+        preferences.append(
+            {
+                "sample_id": row["sample_id"],
+                "feature_key": row["feature_key"],
+                "adapter": PROJECTOR_NAME,
+                "encoder_placeholder_token": PLACEHOLDER_SPEC.placeholder_token,
+                "encoder_loader": "nemotron_stitch.nemo_rl.transport.load_cached_policy_features",
+                "encoder_loader_kwargs": {"cache_root": cache_root},
+                "chat_template_kwargs": {"enable_thinking": False},
+                "context": [{"role": "user", "content": row["prompt"]}],
+                "completions": [
+                    {"rank": 0, "completion": [{"role": "assistant", "content": row["target"]}]},
+                    {"rank": 1, "completion": [{"role": "assistant", "content": f"<answer>{wrong}</answer>"}]},
+                ],
+            }
+        )
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in preferences))
+    return len(preferences)
+
+
 def _cuda_available() -> bool:
     try:
         import torch
@@ -325,7 +363,7 @@ def _resolve_base_cls(spec: ModelSpec) -> type:
         from nemo_automodel.components.models.nemotron_v3.model import NemotronHForCausalLM
 
         return NemotronHForCausalLM
-    # U-14: AutoModel 1814c6c9 builds MoE defaults for Nano's dense topology.
+    # AutoModel 1814c6c9 builds MoE defaults for Nano's dense topology.
     # Automodel#2670 fixes this; use the Hub implementation until the nested
     # AutoModel lock includes commit 33052a2b, then delete this fallback.
     from transformers.dynamic_module_utils import get_class_from_dynamic_module

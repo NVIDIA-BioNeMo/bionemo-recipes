@@ -1,8 +1,8 @@
 # Stage 3 — GRPO on the Lightning 30B target: the DTensor (AutoModel) policy
-# backend, no Megatron Bridge anywhere. The policy warm-starts the compact
+# backend. The policy warm-starts the compact
 # SFT LoRA adapter directly (no dense merge) and there is no HF->MCore
 # conversion; vLLM receives already-projected soft tokens (never CLIP, never
-# raw images). U-25 tracks the non-colocated grouped/3D-expert refit path;
+# raw images). Grouped-expert refit is tracked by U-29;
 # it is not load-bearing here. The frozen projector arrives through
 # policy.projector_artifact_path (the sidecar artifact SFT exported — GRPO
 # keeps it frozen). Runs on unmodified NeMo RL main — no shard_dim
@@ -39,7 +39,7 @@ checkpointing:
 
 policy:
   model_registry_callback: llava_example.register_models
-  # Config-driven worker extension FQNs (U-5); see grpo.yaml.
+  # Config-driven worker extension FQNs; see grpo.yaml.
   worker_extension_cls_fqn: nemotron_stitch.nemo_rl.policy.EncoderDTensorPolicyWorkerV2
   # The qualified GB300 holds the policy and rollout engine together; retain
   # both base-weight copies so the per-step refit stays device-local.
@@ -149,6 +149,9 @@ policy:
       # accumulate policy/rollout divergence over the generation.
       mamba_ssm_cache_dtype: float32
       enable_mm_embeds: true
+      # U-70: vLLM 0.25.1's async_scheduling default stalls colocated
+      # external-DP engines in the drain tail; pin the synchronous path.
+      async_scheduling: false
     colocated:
       enabled: true
 

@@ -17,8 +17,8 @@
 
 Base package import must stay cheap: framework integrations (AutoModel, NeMo
 RL, vLLM) live behind lazy imports in their subpackages so the base wheel
-imports cleanly in an image with no vLLM and Transformers pinned anywhere
-(design §3.7). Only stdlib-only modules are re-exported here.
+imports cleanly without those frameworks.
+Only stdlib-only modules are re-exported here.
 """
 
 from __future__ import annotations

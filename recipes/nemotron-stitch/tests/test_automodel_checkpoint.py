@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Checkpoint helper tests (design §4).
-
-Moved from genome-research's tests/automodel/test_artifacts.py in its port
-Phase 4c, generalized off the DNA names; the consumer keeps wiring proofs
-(DNA prefixes bound, bridge load) in its own suite.
-"""
+"""Checkpoint copying, projector exports, and conservation audits."""
 
 from __future__ import annotations
 
@@ -182,7 +177,7 @@ def test_adapter_fails_closed_without_prefixes():
 
 
 def test_adapter_renames_projector_state_on_export_and_import():
-    """A model-internal projector rename keeps the HF contract (Phase 6)."""
+    """A model-internal projector rename keeps the HF contract."""
 
     class _RenamedAdapter(ProjectorStateDictAdapterMixin, _BaseAdapter):
         PROJECTOR_STATE_PREFIXES = ("mm_projector.projectors.demo.", "marker_delta")

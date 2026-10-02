@@ -15,14 +15,12 @@
 
 """Fail-closed immutable pooled-feature cache with atomic publication.
 
-The contract's field set, order, and hashing are frozen (design §7):
+The contract's field set, order, and hashing are frozen:
 ``cache_id()`` is ``sha256_json(asdict(contract))`` and is the identity of
 every published cache directory, so adding, removing, or reordering a field
 invalidates existing caches and is forbidden without an explicit refill plan.
-Lifted verbatim from genome-research's ``conditioning/cache.py``; the only
-change is that hashing now comes from ``nemotron_stitch.provenance``
-whose byte stream is identical for the ASCII contract content these caches
-use (``tests/test_features_cache.py`` pins the digests).
+Hashing uses ``nemotron_stitch.provenance``;
+``tests/test_features_cache.py`` pins the byte stream and digests.
 """
 
 from __future__ import annotations

@@ -1,6 +1,8 @@
 # Stage 3 — GRPO: warm-started frozen projector (sidecar) + trainable LoRA;
 # vLLM rollout receives already-projected soft tokens (never CLIP, never raw
-# images). One H100, policy and vLLM colocated.
+# images). One H100, policy and vLLM colocated. This is the default frozen
+# contract; configs/grpo-trainable-projector.yaml overlays it to train the
+# projector jointly with the adapter.
 #
 #   python -m nemotron_stitch.nemo_rl.runner --config configs/grpo.yaml
 #
@@ -46,7 +48,7 @@ checkpointing:
 
 policy:
   model_registry_callback: llava_example.register_models
-  # Config-driven worker extension FQNs (U-5): the runner's install_extensions
+  # Config-driven worker extension FQNs: the runner's install_extensions
   # registers these runtimes; NeMo RL validates both keys before allocating
   # workers and fails closed on an unregistered FQN.
   worker_extension_cls_fqn: nemotron_stitch.nemo_rl.policy.EncoderDTensorPolicyWorkerV2
@@ -141,6 +143,9 @@ policy:
       # how much HBM is free when vLLM profiles the colocated process.
       kv_cache_memory_bytes: 4294967296
       enable_mm_embeds: true
+      # U-70: vLLM 0.25.1's async_scheduling default stalls colocated
+      # external-DP engines in the drain tail; pin the synchronous path.
+      async_scheduling: false
     colocated:
       enabled: true
 

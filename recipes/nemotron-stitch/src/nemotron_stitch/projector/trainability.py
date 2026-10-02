@@ -13,21 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Exact trainability policy for the two training stages (design §3.5).
+"""Exact trainability policy for the two training stages.
 
-Generalized from genome-research's ``automodel/trainability.py`` (at
-``294e7372b542f4eb12d4924f066b6828a7e3c14f``): the family matcher is
-parameterized per consumer — genome-research registers ``dna_projection`` as
-the projector family and ``marker_embed_delta`` as extra; ct-nemotron's
-projector is sidecar-held, so it is enumerated from the sidecar attribute
-rather than the module tree.
+The application supplies parameter patterns for each family. Sidecar-held
+projectors are enumerated from their attribute rather than the module tree.
 
-Families (design §1.5 vocabulary): ``projector`` (every parameter of every
+Families: ``projector`` (every parameter of every
 named projector), ``extra`` (named project parameters registered by the
 consumer), ``lora`` (PEFT parameters — the only "adapter"). Stage 1 trains
 ``projector`` (plus ``extra`` when enabled); stage 2 adds ``lora``. A consumer
-may freeze the projector in stage 2 (``train_projector=False``), which
-ct-nemotron does after warm-starting from its stage-1 artifact. Alternatively,
+may freeze the projector in stage 2 (``train_projector=False``) after loading
+its stage-1 artifact. Alternatively,
 ``train_decoder=True`` selects explicitly named decoder parameters for full
 stage-2 training while retaining upstream-required freezes.
 """
@@ -213,7 +209,7 @@ def configure_trainable_parameters(
             if not any(pattern in name for name in names):
                 raise ValueError(f"Decoder pattern matched no parameters: {pattern!r}")
     for _, parameter, family in _iter_family_parameters(model, policy):
-        # U-7: retain native full-model trainability, including protected freezes.
+        # Retain native full-model trainability, including protected freezes.
         # AutoModel 1814c6c9 lacks freeze_config recipe passthrough. Delete
         # this selection seam after adopting the native freeze selectors.
         if train_decoder and family == DECODER:

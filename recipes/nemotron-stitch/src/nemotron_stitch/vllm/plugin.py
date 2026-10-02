@@ -13,25 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""build_mm_plugin: one factory for out-of-tree projected-token vLLM modalities (design §3.6).
+"""build_mm_plugin: one factory for out-of-tree projected-token vLLM modalities.
 
 ``mode="projected"`` serves pre-projected ``[T, H_lm]`` soft tokens straight
 through to ``embed_multimodal`` — vLLM never loads the modality encoder.
-``mode="encode"`` (genome-research's raw-payload path) builds the processing
+``mode="encode"``  builds the processing
 layer — data parser, processor, prompt replacement, dummy inputs — around
 consumer payload callbacks and registers it against the consumer's own
 composite model class, whose ``embed_multimodal`` is where the consumer's
-``encode_fn`` equivalent lives (design §3.6): the model side of an
+``encode_fn`` equivalent lives: the model side of an
 encode-mode modality is a vLLM-native composite (state-caching hybrid
 protocols, LoRA mappings, checkpoint weight routing) that no factory should
 generate.
 
-Built from ct-nemotron's ``vllm_plugin.py`` (ct-nemotron port Phase 4),
-generalized over the modality name, architecture name, base model/processor
+The factory is parameterized by the modality name, architecture name, base model/processor
 classes, and the sentinel config attributes. All vLLM imports stay inside the
 returned ``register`` (projected) or inside the factory call (encode — the
 consumer imports the built classes by name, so they must exist before
-``register()`` runs) so the package imports framework-free (design §3.7).
+``register()`` runs) so the package imports framework-free.
 """
 
 from __future__ import annotations
@@ -132,11 +131,16 @@ def apply_token_embedding_overrides(
     inputs_embeds: torch.Tensor,
     token_ids: tuple[int, ...],
     vectors: torch.Tensor,
+    *,
+    mode: str = "replace",
 ) -> torch.Tensor:
-    """Replace every configured token position after ordinary/MM embedding merge."""
+    """Replace or add declared vectors after ordinary/MM embedding merge."""
+    if mode not in ("replace", "add"):
+        raise ValueError(f"unknown token embedding override mode: {mode!r}")
     result = inputs_embeds
     for index, token_id in enumerate(token_ids):
-        result = result.where((input_ids != token_id).unsqueeze(-1), vectors[index])
+        keep = (input_ids != token_id).unsqueeze(-1)
+        result = result.where(keep, vectors[index] if mode == "replace" else result + vectors[index])
     return result
 
 
@@ -185,6 +189,7 @@ def build_mm_plugin(
     geometry: str = "fixed",
     lora_declarations_from: str | None = None,
     token_embedding_overrides: Mapping[int | str, str] | None = None,
+    token_embedding_override_mode: str = "replace",
     embedding_override_artifact_attr: str = "mm_projector_artifact_path",
     # encode mode
     encode_model_cls: str | None = None,
@@ -218,11 +223,14 @@ def build_mm_plugin(
     string to an EXTRA-state tensor name in the projector artifact. The
     artifact path is read from ``embedding_override_artifact_attr`` on the
     vLLM HF config. Overrides are loaded once and applied after vLLM's existing
-    projected-feature scatter.
+    projected-feature scatter. ``token_embedding_override_mode="replace"``
+    replaces token embeddings; ``"add"`` adds learned deltas to them.
     """
     token_embedding_overrides = dict(token_embedding_overrides or {})
+    if token_embedding_override_mode not in ("replace", "add"):
+        raise ValueError(f"unknown token embedding override mode: {token_embedding_override_mode!r}")
     if mode == "encode":
-        if token_embedding_overrides:
+        if token_embedding_overrides or token_embedding_override_mode != "replace":
             raise ValueError("token_embedding_overrides are supported only in mode='projected'")
         return _build_encode_plugin(
             modality=modality,
@@ -287,7 +295,7 @@ def build_mm_plugin(
         base_processor = _import(base_processor_cls)
         base_dummy = _import(base_dummy_inputs_cls)
 
-        # Projected mode over a text-only base (design §3.6): when the base
+        # Projected mode over a text-only base: when the base
         # model has no multimodal surface of its own, the plugin adds
         # SupportsMultiModal and implements only embed_multimodal, and the
         # processing layer is tokenizer-based rather than an upstream
@@ -315,7 +323,7 @@ def build_mm_plugin(
 
         class ModalityDataParser(MultiModalDataParser):
             # vLLM documents these protected processor methods as its model
-            # integration surface (U-24); keep the implementation local.
+            # integration surface; keep the implementation local.
             def _parse_modality_data(self, data):
                 if data is None:
                     return None
@@ -493,7 +501,7 @@ def build_mm_plugin(
                 # SupportsMultiModal default (MRO); re-expose the Protocol's,
                 # which merges the projected embeddings by placeholder mask.
                 # vLLM documents embed_input_ids overrides for additional merge
-                # logic (U-22); apply the declared frozen token overrides there.
+                # logic; apply the declared frozen token overrides there.
                 def embed_input_ids(self, input_ids, multimodal_embeddings=None, *, is_multimodal=None):
                     inputs_embeds = SupportsMultiModal.embed_input_ids(
                         self, input_ids, multimodal_embeddings, is_multimodal=is_multimodal
@@ -505,11 +513,12 @@ def build_mm_plugin(
                         inputs_embeds,
                         self._stitch_token_embedding_override_ids,
                         self._stitch_token_embedding_override_vectors,
+                        mode=token_embedding_override_mode,
                     )
 
             elif token_embedding_overrides:
                 # Same documented vLLM model-extension point as the text-base
-                # branch above (U-22).
+                # branch above.
                 def embed_input_ids(self, input_ids, multimodal_embeddings=None, *, is_multimodal=None):
                     inputs_embeds = super().embed_input_ids(
                         input_ids, multimodal_embeddings, is_multimodal=is_multimodal
@@ -519,10 +528,11 @@ def build_mm_plugin(
                         inputs_embeds,
                         self._stitch_token_embedding_override_ids,
                         self._stitch_token_embedding_override_vectors,
+                        mode=token_embedding_override_mode,
                     )
 
             if not text_base and hasattr(base_model, "get_mrope_input_positions"):
-                # U-23: vLLM 0.25.1's Qwen MRoPE helper rejects embedding-only
+                # vLLM 0.25.1's Qwen MRoPE helper rejects embedding-only
                 # modalities other than its native image/video grids. External
                 # projected tokens use ordinary sequence positions, so exclude
                 # only this modality and preserve every native feature. Delete
@@ -570,7 +580,7 @@ def build_mm_plugin(
 
 
 # ---------------------------------------------------------------------------
-# mode="encode" (genome-research port Phase 5)
+# mode="encode"
 # ---------------------------------------------------------------------------
 
 
@@ -684,7 +694,7 @@ def _build_encode_plugin(
 
     class ModalityDataParser(MultiModalDataParser):
         # vLLM documents subclassing its parser/processor methods as the model
-        # integration path (U-24); add the out-of-tree modality there.
+        # integration path; add the out-of-tree modality there.
         def _parse_modality_payload(self, data):
             if data is None:
                 return None

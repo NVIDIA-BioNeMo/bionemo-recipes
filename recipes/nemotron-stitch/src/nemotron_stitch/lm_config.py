@@ -22,7 +22,7 @@ rejects only at rollout, after alignment and SFT have already run. Host
 configs carry the width in one of three places — plain ``hidden_size``,
 ``text_config.hidden_size``, or ``llm_config.hidden_size`` — so both
 integrations resolve it here and nowhere else. Stdlib-only; imported lazily
-by the framework integrations (design §3.7).
+by the framework integrations.
 """
 
 from __future__ import annotations

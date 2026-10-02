@@ -8,8 +8,8 @@ projected-token modalities.
 - `mode="encode"` builds the processing layer (data parser, processor, prompt
   replacement, dummy inputs) around a raw encoder payload.
 
-Projected mode can also replace selected vocabulary-token embeddings with
-frozen vectors from the projector artifact's EXTRA state:
+Projected mode can replace selected vocabulary-token embeddings or add learned
+deltas to them using vectors from the projector artifact's EXTRA state:
 
 ```python
 register_vllm = build_mm_plugin(
@@ -20,6 +20,10 @@ register_vllm = build_mm_plugin(
     },
 )
 ```
+
+The default `token_embedding_override_mode="replace"` preserves the replacement
+contract. Set `token_embedding_override_mode="add"` when the host adds a learned
+delta to each marker's ordinary embedding.
 
 The vLLM HF config must carry `mm_projector_artifact_path` (or the attribute
 named by `embedding_override_artifact_attr`). Each string must tokenize to
@@ -41,6 +45,5 @@ imports without vLLM installed.
 
 ## Upstream gaps
 
-Subset of `docs/upstream-gaps.md`
-(the single source of truth). U-22 through U-24 are recorded there as intended
-model/processor extension code, not upstream asks.
+See the [open framework limitations](../../../docs/upstream-gaps.md) for the
+pinned runtime and the conditions for deleting framework workarounds.

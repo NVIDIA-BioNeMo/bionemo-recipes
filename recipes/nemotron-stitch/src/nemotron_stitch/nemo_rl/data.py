@@ -22,7 +22,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from nemotron_stitch.nemo_rl.transport import load_encoder_payload, task_reward_metadata
+import torch
+
+from nemotron_stitch.nemo_rl.transport import load_encoder_payload, resolve_callback, task_reward_metadata
 from nemotron_stitch.prompt import PlaceholderSpec, render_soft_token_prompt
 
 POLICY_PREFIX = "mm_features__"
@@ -63,6 +65,18 @@ class ChatTemplateKwargsProxy:
         return getattr(self._tokenizer, name)
 
 
+def _encoder_prompt_template(question: str, adapter: str) -> str:
+    """Preserve an authored soft-token marker; otherwise supply the prefix.
+
+    RL questions may embed one ``{mm:<adapter>}`` marker at their chosen
+    position (the frozen balanced pool does). Marker-free questions keep the
+    conventional modality-prefix layout. Wrong-projector names, duplicates, and
+    missing markers still fail closed in the public renderer, which validates
+    marker identity and multiplicity.
+    """
+    return question if "{mm:" in question else f"{{mm:{adapter}}}\n" + question
+
+
 def _render_policy_content(
     question: str,
     token_count: int,
@@ -76,7 +90,7 @@ def _render_policy_content(
     # the consumer names the modality (the LLaVA example passes ``image``) — the
     # package holds no modality names.
     return render_soft_token_prompt(
-        f"{{mm:{adapter}}}\n" + question,
+        _encoder_prompt_template(question, adapter),
         [PlaceholderSpec(adapter, start_token, placeholder_token, end_token)],
         {adapter: token_count},
     )
@@ -159,7 +173,16 @@ def encoder_rl_processor(
     rollout_messages = []
     if datum_dict.get("system_prompt"):
         rollout_messages.append({"role": "system", "content": str(datum_dict["system_prompt"])})
-    rollout_messages.append({"role": "user", "content": marker + "\n" + str(datum_dict["question"])})
+    rollout_messages.append(
+        {
+            "role": "user",
+            # The rollout sentinel takes the marker's authored position; a
+            # literal ``{mm:...}`` must never reach the generation prompt.
+            "content": _encoder_prompt_template(str(datum_dict["question"]), adapter).replace(
+                f"{{mm:{adapter}}}", marker
+            ),
+        }
+    )
     rollout_content = tokenizer.apply_chat_template(
         rollout_messages,
         tokenize=False,
@@ -193,8 +216,47 @@ def encoder_rl_processor(
         "task_name": datum_dict["task_name"],
         "stop_strings": None,
         "vllm_content": rollout_content,
-        "vllm_multi_modal_data": {adapter: projected},
+        # One item containing T soft tokens, not T separate modality items:
+        # vLLM's EmbeddingItems counts a rank-two tensor's rows as
+        # separate items, so the projected payload must arrive as a one-item
+        # list. Upstream formatting preserves this vLLM-ready item list.
+        "vllm_multi_modal_data": {adapter: [projected]},
     }
+
+
+def encoder_preference_processor(
+    datum_dict: dict[str, Any],
+    task_data_spec: Any,
+    tokenizer: Any,
+    max_seq_length: int,
+    idx: int,
+) -> dict[str, Any]:
+    """Attach the same encoder features to both DPO branches."""
+    from nemo_rl.data.multimodal_utils import PackedTensor
+    from nemo_rl.data.processors import preference_preprocessor
+
+    adapter = str(datum_dict["adapter"])
+    features = resolve_callback(str(datum_dict["encoder_loader"]))(
+        datum_dict, adapter, **dict(datum_dict.get("encoder_loader_kwargs") or {})
+    )
+    if not isinstance(features, torch.Tensor) or features.ndim != 2 or features.shape[0] <= 0:
+        raise ValueError("preference encoder loader must return nonempty [tokens, hidden] features")
+    placeholder_id = int(tokenizer.convert_tokens_to_ids(datum_dict["encoder_placeholder_token"]))
+    template_kwargs = dict(datum_dict.get("chat_template_kwargs") or {})
+    rendered_tokenizer = ChatTemplateKwargsProxy(tokenizer, template_kwargs) if template_kwargs else tokenizer
+    result = preference_preprocessor(datum_dict, task_data_spec, rendered_tokenizer, max_seq_length, idx)
+    if result["loss_multiplier"] != 1.0:
+        raise ValueError("preference branch exceeds max_seq_length; feature positions would be truncated")
+    for branch in ("message_log_chosen", "message_log_rejected"):
+        messages = result[branch]
+        positions = sum(int(message["token_ids"].eq(placeholder_id).sum()) for message in messages)
+        if positions != features.shape[0]:
+            raise ValueError(f"{branch} has {positions} soft-token slots, expected {features.shape[0]}")
+        user_messages = [message for message in messages if message["role"] == "user"]
+        if len(user_messages) != 1:
+            raise ValueError(f"{branch} requires exactly one user message")
+        user_messages[0][POLICY_PREFIX + adapter] = PackedTensor(features, dim_to_pack=0)
+    return result
 
 
 class EncoderRLDataset:

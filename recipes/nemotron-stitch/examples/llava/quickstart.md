@@ -275,7 +275,12 @@ defaults:
 
 The model contract contains the snapshot, registered architecture, projector
 configuration, warm-start paths, LoRA targets, sentinel strings, and vLLM
-limits. Configure the callbacks in the stage file:
+limits. Keep the projector frozen by default (`mm_projector_trainable: false`,
+`mm_projector_ownership: sidecar`); to train it during GRPO instead, follow
+the llava example's `grpo-trainable-projector.yaml` overlay — module
+ownership, an explicit `projector_lr`, an unforced ratio, and a nonzero KL
+penalty (see its README section for why each is required). Configure the
+callbacks in the stage file:
 
 ```yaml
 policy:

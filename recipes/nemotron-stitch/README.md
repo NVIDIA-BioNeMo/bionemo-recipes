@@ -3,8 +3,9 @@
 **STITCH**: Soft-Token Integration, Training, Checkpointing, and Hosting.
 
 Nemotron Stitch connects a frozen external encoder to a Nemotron language
-model. The encoder turns an application-specific input into representation
-vectors, and a small trainable **projector** maps those vectors into the
+model or any other base reasoning model. The encoder turns an
+application-specific input into representation vectors, and a small trainable
+**projector** maps those vectors into the
 language model's embedding space. The projected vectors are **soft tokens**:
 they replace reserved token positions in the prompt and are then processed like
 ordinary language-model embeddings.
@@ -161,7 +162,7 @@ through the same storage format or geometry.
 
 ## Training and serving
 
-The usual workflow has two required stages and one optional stage:
+The usual workflow has three stages:
 
 | Stage     | Trainable state                 | Purpose                                             |
 | --------- | ------------------------------- | --------------------------------------------------- |
@@ -293,7 +294,12 @@ docker run --rm \
 
 See [`AGENTS.md`](AGENTS.md) for repository conventions, the full worker-venv
 test matrix, and the rule for documenting framework workarounds. Current
-upstream limitations are tracked in `docs/upstream-gaps.md`.
+upstream limitations are tracked in [`docs/upstream-gaps.md`](docs/upstream-gaps.md).
+
+This recipe imports upstream Stitch commit
+`c3f389af8316eacaec1906637afe6da81fe99bf0`,
+with BioNeMo-specific CI, packaging, documentation, and topology/refit
+admission fixes.
 
 ## License
 
@@ -321,4 +327,4 @@ LoRA parameters fail closed. Alignment and default LoRA SFT retain their existin
 behavior. The optimizer remains `ProjectorAdamWConfig`; upstream AutoModel owns
 full checkpoint serialization. CPU optimizer/recipe tests qualify the selection
 contract only: full-model distributed capacity and stage handoffs still require
-qualification on the target model and hardware. See U-7 in the upstream tracker.
+qualification on the target model and hardware.
