@@ -13,7 +13,8 @@ data, prompts, rewards, and evaluation.
 No implementation under `src/nemotron_stitch/` may depend on one modality or
 encoder. `examples/` contains application code; use `examples/llava/` as the
 reference. Guidance for adding an example lives in
-[`skills/extend-example/SKILL.md`](skills/extend-example/SKILL.md).
+the repository-level `nemotron-stitch-extend-example` skill in
+`skills/nemotron-stitch-extend-example/SKILL.md` (from the BioNeMo checkout root).
 
 Framework imports must stay lazy. The base package must import without NeMo
 AutoModel, NeMo RL, or vLLM installed. Match the existing code and the recipe's

@@ -1,14 +1,30 @@
 ---
-name: extend-example
+name: nemotron-stitch-extend-example
 description: Add or adapt a Nemotron Stitch example for an external encoder and paired data, using the LLaVA recipe as the reference for training and serving integration.
 ---
 
 # Extend a Stitch example
 
-Use this recipe's `examples/llava/README.md` and `examples/llava/quickstart.md`
-to identify the application boundaries. Read the recipe `AGENTS.md` before
-editing. Resolve these paths from the recipe root, two directories above this
-skill folder.
+## Locate the recipe checkout
+
+Prefer the BioNeMo Recipes checkout supplied by the user, then a compatible
+nearby checkout. The selected checkout must contain:
+
+- `recipes/nemotron-stitch/AGENTS.md`;
+- `recipes/nemotron-stitch/examples/llava/README.md`;
+- `recipes/nemotron-stitch/examples/llava/quickstart.md`; and
+- `recipes/nemotron-stitch/src/nemotron_stitch/contracts.py`.
+
+If no compatible checkout is available, acquire
+`https://github.com/NVIDIA-BioNeMo/bionemo-recipes` without overwriting existing
+work. Record the checkout root, recipe root, and revision when available.
+The skill may be installed separately: do not resolve the recipe relative to
+this skill's installation path.
+
+Read the selected recipe's `AGENTS.md`, LLaVA README, and quickstart before
+editing. Resolve the paths below from the selected recipe root. Check the
+current recipe implementation and image pins before applying version-specific
+recommendations; they can differ from the snapshot described here.
 
 ## Build the application boundary
 
