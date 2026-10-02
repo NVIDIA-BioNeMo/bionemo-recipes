@@ -10,12 +10,14 @@
         "Publication settings are historical evidence; the SFT context comes from an agreed upper bound of collected tokenized genome lengths with full-genome samples and masked padding.",
         "The response benchmarks a DP-first target-length fit and adds TP, PP, or CP only when memory or measured throughput requires it while preserving the approved effective token batch.",
         "Its real-record smoke test verifies that conditioning-prefix targets are loss-masked while the following biological targets remain active at document and packed-sample boundaries.",
+        "For indexed data verified to be taxonomy-free, it uses --skip-taxonomy-loss-mask consistently in training and evaluation; annotated corpora retain taxonomy masking. It verifies genuine EOD supervision and padding exclusion, and treats a changed mask as a new attempt with different loss semantics.",
         "For a new 7B phage project the response uses public NGC checkpoint evo2/7b-1m:1.0 with model size evo2_7b, records provider, version, and format, and uses a public Arc conversion only as a tested fallback.",
         "It does not switch an existing evo2_7b_base run to evo2_7b mid-run; that model-family change starts a new result root and attempt.",
         "The response treats 12,000 steps as a historical starting hypothesis, recalibrates a ceiling from usable corpus and effective batch, schedules enough comparable validation and checkpoint events, and selects the lowest comparable validation-loss checkpoint.",
         "The response treats local training and validation metrics as sufficient; optional remote reporting does not gate the scientific run or checkpoint decision.",
         "The selected-checkpoint review includes verified training bytes or tokens, markers, orientation, tokenizer, BOS/EOS, wrappers, padding, and masking for RL sampling calibration.",
-        "Before NeMo-RL, it creates a separate model-only SFT checkpoint that retains serialized model object state, strips optimizer, scheduler, RNG, and training state, sanitizes runtime callbacks and timers, records provenance, and leaves the resumable SFT source unchanged."
+        "Before NeMo-RL, it creates a separate model-only SFT checkpoint that retains serialized model object state, strips optimizer, scheduler, RNG, and training state, sanitizes runtime callbacks and timers, records provenance, and leaves the resumable SFT source unchanged.",
+        "It validates the succeeded schema-2 model-only payload for RL and downstream likelihood scoring, while retaining the full-state source for exact SFT resume."
       ],
       "expected_skill": "bionemo-phage-design-operate-mbridge-sft",
       "expected_script": null
@@ -82,6 +84,7 @@
       "assertions": [
         "The response explains that a larger global batch produces fewer optimizer updates per epoch and does not treat completion of one epoch as evidence of convergence.",
         "Because the final comparable validation is still best and has not rebounded, the response recommends resuming from the compatible checkpoint and extending the training ceiling rather than declaring the run complete.",
+        "The resume restores the saved step, optimizer, scheduler, and RNG state; it does not reset training by forcing the base checkpoint into finetune mode.",
         "The continuation is sized and monitored using optimizer updates plus examples or tokens seen, with enough comparable validation points to distinguish continued improvement from a plateau or rebound; several epochs may be appropriate, but no fixed epoch count is imposed.",
         "Checkpoint selection remains based on the lowest credible comparable validation loss, and the held-out test split is not used to decide how long to train."
       ],
