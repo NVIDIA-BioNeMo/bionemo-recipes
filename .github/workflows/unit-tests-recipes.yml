@@ -129,9 +129,9 @@ jobs:
             ')
           fi
 
-          # Assign Docker images to the selected directories
-          # Currently, AMPLIFY is the only folder that needs a custom base image, since we have to support both TE and
-          # xformers-based models for golden value testing. The rest of the models use the default pytorch image.
+          # Assign Docker images to the selected directories. AMPLIFY needs both TE and
+          # xformers for golden-value testing. Nemotron Stitch needs its pinned NeMo RL,
+          # AutoModel, and vLLM environments.
 
           DIRS_WITH_IMAGES=$(echo "$DIRS" | jq -c '
             map({
@@ -140,6 +140,8 @@ jobs:
               image: (
                 if . == "models/amplify" then
                   "svcbionemo023/bionemo-framework:amplify-model-devcontainer-082025"
+                elif . == "recipes/nemotron-stitch" then
+                  "svcbionemo023/bionemo-framework:nemo-rl-ci-b03da0f4-amd64@sha256:08fd971c29f8e76f0d589bc7195104231594e859707fda6fac82388770732140"
                 else
                   "nvcr.io/nvidia/pytorch:26.07-py3"
                 end
