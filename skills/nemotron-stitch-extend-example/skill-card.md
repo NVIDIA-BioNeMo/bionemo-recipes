@@ -15,7 +15,8 @@ NVIDIA
 
 Locate a compatible BioNeMo Recipes checkout, identify the application-owned
 encoder, data, and prompt boundaries, and build a small example with explicit
-training and artifact handoffs.
+training and artifact handoffs. Route framework limitations and Stitch-owned
+bugs to their separate recipe trackers.
 
 ## Requirements / Dependencies
 

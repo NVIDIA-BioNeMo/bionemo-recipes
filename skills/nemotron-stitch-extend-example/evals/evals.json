@@ -36,7 +36,8 @@
         "Require module ownership and explicit projector trainability.",
         "Explain that this snapshot admits the constant-only scheduler and rejects combined replication and EP.",
         "Keep async_scheduling false explicit for colocated external DP on vLLM 0.25.1.",
-        "Use the pinned container tests and distinguish smoke checks from quality qualification."
+        "Use the pinned container tests and distinguish smoke checks from quality qualification.",
+        "Record framework limitations in docs/upstream-gaps.md and Stitch-owned bugs in docs/bug-reports.md, keeping U- and B- identifiers separate."
       ],
       "expected_skill": "nemotron-stitch-extend-example",
       "expected_script": null

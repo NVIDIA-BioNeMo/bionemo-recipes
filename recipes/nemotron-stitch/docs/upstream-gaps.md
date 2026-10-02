@@ -4,7 +4,8 @@ Open framework limitations affecting Stitch and its examples. Closed, merged,
 adopted, withdrawn, and package-only items are removed. Merged fixes are omitted
 even when the runtime pin has not adopted them; those remaining workarounds
 keep their affected revision and deletion condition in code comments. Identifiers cited in workaround
-comments stay stable and must not be reused.
+comments stay stable and must not be reused. Stitch-owned open bugs and
+capability gaps are tracked separately in [`bug-reports.md`](bug-reports.md).
 
 These findings apply to the pinned example stack: NeMo RL `b03da0f4`,
 AutoModel `1814c6c9`, PyTorch `2.11.0+cu130`, and vLLM `0.25.1`.

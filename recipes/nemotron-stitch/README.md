@@ -295,6 +295,7 @@ docker run --rm \
 See [`AGENTS.md`](AGENTS.md) for repository conventions, the full worker-venv
 test matrix, and the rule for documenting framework workarounds. Current
 upstream limitations are tracked in [`docs/upstream-gaps.md`](docs/upstream-gaps.md).
+Open Stitch-owned bugs are tracked separately in [`docs/bug-reports.md`](docs/bug-reports.md).
 
 This recipe imports upstream Stitch commit
 `c3f389af8316eacaec1906637afe6da81fe99bf0`,

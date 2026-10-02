@@ -31,8 +31,9 @@ Workaround comments should explain the affected revision and state what
 upstream capability would let us delete the code. Cite an open `U-` identifier
 while the framework issue remains open. For merged fixes awaiting a runtime pin
 bump, retain the deletion condition in the comment without a tracker row.
-Package contracts do not need gap entries. Remove closed entries; never reuse
-an identifier. When adopting an upstream fix, delete the workaround.
+Track open Stitch-owned bugs and capability gaps separately in
+[`docs/bug-reports.md`](docs/bug-reports.md), using stable `B-` identifiers.
+Remove closed entries from both trackers; never reuse an identifier. When adopting an upstream fix, delete the workaround.
 
 Preserve numerical parity during refactors. Changes to forward kwargs, index
 geometry, or artifact manifests require a schema version change and converter.

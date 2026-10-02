@@ -67,7 +67,9 @@ and general training or generation fixes belong in Stitch or upstream.
 
 When a needed public capability is missing, record the framework and pinned
 revision, a minimal reproduction, and the required behavior in
-`docs/upstream-gaps.md`. Continue independent example work. Do not hide a
+`docs/upstream-gaps.md`. Record Stitch-owned bugs and capability gaps in
+`docs/bug-reports.md` instead, preserving the separate `U-` and `B-` identifiers.
+Continue independent example work. Do not hide a
 framework monkey patch or compatibility shim in an application helper.
 
 ## Verify and explain the recipe
