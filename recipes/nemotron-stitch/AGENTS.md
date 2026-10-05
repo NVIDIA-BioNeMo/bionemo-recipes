@@ -42,9 +42,9 @@ geometry, or artifact manifests require a schema version change and converter.
 ## Source synchronization
 
 This BioNeMo recipe is maintained at
-`NVIDIA-BioNeMo/bionemo-recipes/recipes/nemotron-stitch`, with package and example
-updates imported from `NVIDIA-dev/nemotron-stitch`. Import a pinned upstream
-snapshot and retain BioNeMo-specific CI, image, packaging, and discovery changes.
+`NVIDIA-BioNeMo/bionemo-recipes/recipes/nemotron-stitch`. When importing package
+and example updates, use a pinned source snapshot and retain BioNeMo-specific
+CI, image, packaging, and discovery changes.
 Record the imported commit in the recipe README and BioNeMo PR description.
 The repositories have independent histories; do not use a bidirectional subtree.
 

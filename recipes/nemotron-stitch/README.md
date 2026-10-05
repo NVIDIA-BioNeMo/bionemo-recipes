@@ -301,11 +301,7 @@ This recipe imports upstream Stitch commit
 with BioNeMo-specific CI, packaging, documentation, and topology/refit
 admission fixes.
 
-## License
-
-Apache-2.0.
-
-### Full decoder SFT (experimental)
+## Full decoder SFT
 
 The shared `ProjectorFinetuneRecipe` can use full decoder training in stage 2.
 Omit the AutoModel `peft` section and select the decoder parameter names explicitly:
