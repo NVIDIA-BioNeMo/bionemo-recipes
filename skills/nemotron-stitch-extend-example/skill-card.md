@@ -15,8 +15,8 @@ NVIDIA
 
 Locate a compatible BioNeMo Recipes checkout, identify the application-owned
 encoder, data, and prompt boundaries, and build a small example with explicit
-training and artifact handoffs. Route framework limitations and Stitch-owned
-bugs to their separate recipe trackers.
+training and artifact handoffs. Keep the upstream-gap reference limited to open
+framework issues explicitly cited in the recipe source.
 
 ## Requirements / Dependencies
 
