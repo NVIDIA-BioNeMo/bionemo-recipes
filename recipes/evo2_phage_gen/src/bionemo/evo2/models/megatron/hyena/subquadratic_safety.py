@@ -190,7 +190,8 @@ def ensure_subquadratic_causal_conv1d_supported(device_index: int | None = None)
     device_index = torch.cuda.current_device() if device_index is None else device_index
     device = torch.device("cuda", device_index)
 
-    from subquadratic_ops_torch.causal_conv1d import causal_conv1d as subq_causal_conv1d
+    # Exercise the model callable, including its cuDNN import-order cache repair.
+    from bionemo.evo2.models.megatron.hyena.hyena_utils import causal_conv1d as subq_causal_conv1d
 
     batch_size = 1
     hidden_size = 4

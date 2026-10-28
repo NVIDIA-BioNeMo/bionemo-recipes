@@ -31,6 +31,22 @@ from bionemo.evo2.models.megatron.hyena.subquadratic_safety import ensure_subqua
 logger = logging.getLogger(__name__)
 
 
+def _evo2_get_ltor_masks_and_position_ids(*args, **kwargs):
+    """Use Evo2's implicit causal attention and retain absolute token positions."""
+    data = kwargs.get("data") if "data" in kwargs else args[0]
+    position_ids = torch.arange(data.shape[1], dtype=torch.long, device=data.device)
+    return None, None, position_ids.unsqueeze(0).expand_as(data)
+
+
+def _install_evo2_maskless_attention_inputs() -> None:
+    """Avoid quadratic replay masks in the driver and independently loaded workers."""
+    from nemo_rl.models.megatron import data as megatron_data
+
+    if megatron_data.get_ltor_masks_and_position_ids is not _evo2_get_ltor_masks_and_position_ids:
+        megatron_data.get_ltor_masks_and_position_ids = _evo2_get_ltor_masks_and_position_ids
+        logger.info("Installed Evo2 maskless replay/training inputs in this process")
+
+
 def _evo2_batched_decode_size(cfg: dict[str, Any]) -> int:
     generation = cfg.get("generation", {}) or {}
     mcore_generation_config = generation.get("mcore_generation_config", {}) or {}
@@ -65,52 +81,62 @@ def _resume_evo2_native_cache(native_dynamic: Any) -> None:
         torch.cuda.synchronize()
 
 
+def _detach_evo2_native_cuda_graph_managers(native_dynamic: Any) -> None:
+    """Keep decode-only graph dispatch out of the policy training forward pass."""
+    for module, manager in getattr(native_dynamic, "cuda_graph_manager_bindings", ()):
+        installed = getattr(module, "cudagraph_manager", None)
+        if installed is manager:
+            delattr(module, "cudagraph_manager")
+        elif installed is not None:
+            raise RuntimeError("Evo2 decode graph manager binding changed before policy training")
+
+
 def _suspend_evo2_native_cache(native_dynamic: Any) -> None:
-    """Release non-persistent native inference buffers after a rollout."""
+    """Release non-persistent buffers and detach decode graphs before policy training."""
     context = getattr(native_dynamic, "shared_dyn_ctx", None)
     if context is None:
         return
     context.reset()
-    cache_mode = str(getattr(native_dynamic, "kv_cache_management_mode", "persist")).lower()
-    if cache_mode == "persist" or not bool(getattr(context, "is_tensor_state_allocated", True)):
-        return
-
-    allocated_before = None
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        allocated_before = int(torch.cuda.memory_allocated())
-    context.deallocate_inference_state_buffers()
-    if bool(getattr(context, "is_tensor_state_allocated", True)):
-        raise RuntimeError("Evo2 native inference state remained allocated after non-persistent cache release")
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        allocated_after = int(torch.cuda.memory_allocated())
-        if allocated_before is None or allocated_after >= allocated_before:
-            raise RuntimeError(
-                "Evo2 native cache release did not reduce allocated device memory: "
-                f"before={allocated_before} after={allocated_after}"
+    configured_cache_mode = getattr(native_dynamic, "kv_cache_management_mode", "persist")
+    cache_mode = str(getattr(configured_cache_mode, "value", configured_cache_mode)).lower()
+    if cache_mode != "persist" and bool(getattr(context, "is_tensor_state_allocated", True)):
+        allocated_before = None
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated_before = int(torch.cuda.memory_allocated())
+        context.deallocate_inference_state_buffers()
+        if bool(getattr(context, "is_tensor_state_allocated", True)):
+            raise RuntimeError("Evo2 native inference state remained allocated after non-persistent cache release")
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated_after = int(torch.cuda.memory_allocated())
+            if allocated_before is None or allocated_after >= allocated_before:
+                raise RuntimeError(
+                    "Evo2 native cache release did not reduce allocated device memory: "
+                    f"before={allocated_before} after={allocated_after}"
+                )
+            release_evidence = {
+                "mode": cache_mode,
+                "tensor_state_allocated": False,
+                "allocated_before_mib": allocated_before // 1024**2,
+                "allocated_after_mib": allocated_after // 1024**2,
+            }
+            native_dynamic.last_cache_release_evidence = release_evidence
+            logger.warning(
+                "Evo2 native cache release verified: mode=%s tensor_state_allocated=false "
+                "allocated_before_mib=%d allocated_after_mib=%d",
+                release_evidence["mode"],
+                release_evidence["allocated_before_mib"],
+                release_evidence["allocated_after_mib"],
             )
-        release_evidence = {
-            "mode": cache_mode,
-            "tensor_state_allocated": False,
-            "allocated_before_mib": allocated_before // 1024**2,
-            "allocated_after_mib": allocated_after // 1024**2,
-        }
-        native_dynamic.last_cache_release_evidence = release_evidence
-        logger.warning(
-            "Evo2 native cache release verified: mode=%s tensor_state_allocated=false "
-            "allocated_before_mib=%d allocated_after_mib=%d",
-            release_evidence["mode"],
-            release_evidence["allocated_before_mib"],
-            release_evidence["allocated_after_mib"],
-        )
-    if getattr(native_dynamic, "cuda_graphs_enabled", False):
-        from bionemo.evo2.run.infer import _reset_layer_cuda_graphs
+        if getattr(native_dynamic, "cuda_graphs_enabled", False):
+            from bionemo.evo2.run.infer import _reset_layer_cuda_graphs
 
-        # Non-persistent buffers receive new addresses when restored. Discard runners bound to
-        # the old cache/state storage; the next generation call will warm and verify fresh graphs.
-        _reset_layer_cuda_graphs(native_dynamic)
-        context.evo2_warmed_cuda_graph_request_counts = frozenset()
+            # New buffer addresses require fresh capture and verification next rollout.
+            _reset_layer_cuda_graphs(native_dynamic)
+            context.evo2_warmed_cuda_graph_request_counts = frozenset()
+    if getattr(native_dynamic, "cuda_graphs_enabled", False):
+        _detach_evo2_native_cuda_graph_managers(native_dynamic)
 
 
 def _unwrap_evo2_model(model: Any) -> Any:
@@ -371,6 +397,7 @@ class Evo2MegatronGenerationAdapter:
 
     def __init__(self, config: dict[str, Any] | None = None):
         """Create an adapter from NeMo-RL generation adapter config."""
+        _install_evo2_maskless_attention_inputs()
         self.config = dict(config or {})
         self.seed_stride = int(self.config.get("seed_stride", 1_000_003))
         self.call_index_offset = int(self.config.get("call_index_offset", 0))
@@ -383,6 +410,11 @@ class Evo2MegatronGenerationAdapter:
         """Keep model tensors resident only after a CUDA graph has captured their storage."""
         native_dynamic = getattr(worker, "_evo2_native_dynamic_components", None)
         if native_dynamic is None or not getattr(native_dynamic, "cuda_graphs_enabled", False):
+            return False
+
+        configured_cache_mode = getattr(native_dynamic, "kv_cache_management_mode", "persist")
+        cache_mode = str(getattr(configured_cache_mode, "value", configured_cache_mode)).lower()
+        if cache_mode != "persist":
             return False
 
         dynamic_graph_ready = bool(

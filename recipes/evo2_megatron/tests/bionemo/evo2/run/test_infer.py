@@ -571,6 +571,19 @@ def test_normalize_new_request_slots_only_reverses_mcore_lifo_order(slots, expec
     assert context.mamba_metadata.request_to_mamba_state_idx.tolist() == expected
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_stop_ids_exclude_unknown_alias(nested):
+    backend = SimpleNamespace(
+        get_vocab=lambda: {"<EOS>": 0, "<UNK>": 4},
+        token_to_id=lambda token: {"<EOS>": 0}.get(token, 4),
+    )
+    tokenizer = SimpleNamespace(eod=0, tokenizer=backend) if nested else backend
+    stop_ids = _native_stop_token_ids(tokenizer)
+    assert stop_ids == {0}
+    assert infer_module._sampled_token_action(4, stop_ids, ignore_eos=False, preserve_eos_token=True) == (True, False)
+    assert infer_module._sampled_token_action(0, stop_ids, ignore_eos=False, preserve_eos_token=True) == (True, True)
+
+
 def test_native_stop_token_ids_resolves_eos_text_token():
     """The Evo2 tokenizer uses token id 0 / <EOS> to mark generation end."""
 

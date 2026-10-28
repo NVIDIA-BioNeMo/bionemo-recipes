@@ -717,11 +717,73 @@ def test_nemo_worker_bypasses_generic_engine_for_evo2_adapter(monkeypatch):
     adapter.finish_worker.assert_called_once_with(worker)
 
 
+@pytest.mark.parametrize("cache_mode", ["persist", "offload", "recompute"])
+@pytest.mark.parametrize("allocated", [False, True])
+def test_graph_manager_training_handoff(monkeypatch, cache_mode, allocated):
+    from bionemo.evo2.run.infer import _restore_native_dynamic_cuda_graph_managers
+
+    manager = object()
+    module = SimpleNamespace(cudagraph_manager=manager)
+    context = SimpleNamespace(is_tensor_state_allocated=allocated, reset=lambda: None)
+    context.deallocate_inference_state_buffers = lambda: setattr(context, "is_tensor_state_allocated", False)
+    native = SimpleNamespace(
+        shared_dyn_ctx=context,
+        kv_cache_management_mode=cache_mode,
+        cuda_graphs_enabled=True,
+        cuda_graph_manager_bindings=((module, manager),),
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr("bionemo.evo2.run.infer._reset_layer_cuda_graphs", lambda _: None)
+    for _ in range(2):
+        evo2_generation._suspend_evo2_native_cache(native)
+        assert not hasattr(module, "cudagraph_manager")
+        assert _restore_native_dynamic_cuda_graph_managers(native) == 1
+        assert module.cudagraph_manager is manager
+    assert context.is_tensor_state_allocated is (allocated and cache_mode == "persist")
+
+
+def test_graph_manager_mismatch_rejected():
+    module = SimpleNamespace(cudagraph_manager=object())
+    native = SimpleNamespace(
+        shared_dyn_ctx=SimpleNamespace(reset=lambda: None),
+        kv_cache_management_mode="persist",
+        cuda_graphs_enabled=True,
+        cuda_graph_manager_bindings=((module, object()),),
+    )
+    with pytest.raises(RuntimeError, match="binding changed"):
+        evo2_generation._suspend_evo2_native_cache(native)
+
+
+@pytest.mark.parametrize("cache_mode", ["offload", "recompute"])
+def test_nonpersistent_graph_storage(cache_mode):
+    adapter = Evo2MegatronGenerationAdapter()
+    native = SimpleNamespace(
+        kv_cache_management_mode=cache_mode,
+        cuda_graphs_enabled=True,
+        shared_dyn_ctx=object(),
+        cuda_graph_replay_verified=True,
+    )
+    worker = SimpleNamespace(_evo2_native_dynamic_components=native)
+    assert not adapter.requires_persistent_model_storage(worker)
+
+
+@pytest.mark.parametrize("cache_mode", ["persist", "offload", "recompute"])
+def test_worker_respects_cache_storage_policy(cache_mode):
+    worker = SimpleNamespace(
+        cfg={"generation": {"mcore_generation_config": {"kv_cache_management_mode": cache_mode}}},
+        _load_generation_adapter=lambda: SimpleNamespace(requires_persistent_model_storage=True),
+    )
+    assert MegatronGenerationMixin._generation_adapter_requires_persistent_model_storage(worker) is (
+        cache_mode == "persist"
+    )
+
+
 def test_graph_adapter_preserves_captured_model_storage():
     adapter = Evo2MegatronGenerationAdapter({"seed": 17})
     worker = SimpleNamespace(
         _evo2_native_dynamic_components=None,
         _load_generation_adapter=lambda: adapter,
+        cfg={"generation": {"mcore_generation_config": {"kv_cache_management_mode": "persist"}}},
     )
     assert not adapter.requires_persistent_model_storage(worker)
 

@@ -25,7 +25,7 @@ diff --git a/nemo_rl/__init__.py b/nemo_rl/__init__.py
 +
 +# Recipe-patch capability markers used by CUDA-free installation checks. Source-level
 +# recipe tests separately verify their implementation sites.
-+EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION = 2
++EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION = 3
 +EVO2_RESPONSE_TERMINATION_VERSION = 2
 diff --git a/nemo_rl/algorithms/grpo.py b/nemo_rl/algorithms/grpo.py
 index e5647bae7..b8603d049 100644
@@ -431,7 +431,7 @@ index 0a0721dd9..00eebb24a 100644
 +
 +
  class MegatronGenerationMixin:
-@@ -73,13 +84,70 @@ class MegatronGenerationMixin:
+@@ -73,13 +84,76 @@ class MegatronGenerationMixin:
          self._inference_loop = None
          self._inference_thread = None
 
@@ -475,8 +475,14 @@ index 0a0721dd9..00eebb24a 100644
 +        adapter = self._load_generation_adapter()
 +        requirement = getattr(adapter, "requires_persistent_model_storage", False)
 +        if callable(requirement):
-+            return bool(requirement(self))
-+        return bool(requirement)
++            adapter_requires_storage = bool(requirement(self))
++        else:
++            adapter_requires_storage = bool(requirement)
++        generation = self.cfg.get("generation") or {}
++        mcore_generation = generation.get("mcore_generation_config") or {}
++        configured_cache_mode = mcore_generation.get("kv_cache_management_mode", "persist")
++        cache_mode = str(getattr(configured_cache_mode, "value", configured_cache_mode)).lower()
++        return cache_mode == "persist" and adapter_requires_storage
 +
 +    def _generation_adapter_model_refit_complete(self) -> None:
 +        """Notify the adapter after colocated policy weights have changed."""

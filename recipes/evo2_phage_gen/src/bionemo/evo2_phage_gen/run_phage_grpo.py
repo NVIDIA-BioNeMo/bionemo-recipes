@@ -208,6 +208,9 @@ def main(default_config: str = "configs/grpo_phage_megatron.yaml", default_algor
 
     assert_nemo_rl_runtime()
     _register_recipe_extensions()
+    from bionemo.evo2_phage_gen.nemo_rl_evo2_generation import _install_evo2_maskless_attention_inputs
+
+    _install_evo2_maskless_attention_inputs()
     register_omegaconf_resolvers()
     args, overrides = _parse_args(default_config, default_algorithm)
     config = load_config(args.config)

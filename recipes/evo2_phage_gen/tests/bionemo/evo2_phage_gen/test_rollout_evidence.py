@@ -454,8 +454,28 @@ def test_arc_summary_keeps_legacy_reports(tmp_path, contract):
         ({"prompt_anchors": "origin"}, False),
         ({"prompt_anchors": [{}]}, False),
         ({"prompt_anchors": [{"start_1_based": True}]}, False),
+        ({"prompt_anchors": [{"start_1_based": 1}]}, False),
+        ({"prompt_anchors": [{"name": "", "start_1_based": 1}]}, False),
+        ({"prompt_anchors": [{"name": "bad name", "start_1_based": 1}]}, False),
+        ({"prompt_anchors": [{"name": "bad:name", "start_1_based": 1}]}, False),
+        ({"prompt_anchors": [{"name": None, "start_1_based": 1}]}, False),
+        ({"prompt_anchors": [{"name": 7, "start_1_based": 1}]}, False),
+        ({"prompt_anchors": [{"name": "origin", "start_1_based": 1, "extra": "unrecognized"}]}, False),
+        ({"prompt_anchors": [{"name": "origin", "start_1_based": 1.5}]}, False),
+        ({"prompt_anchors": [{"name": "origin", "start_1_based": 0}]}, False),
         ({"prompt_anchors": [{"name": "origin", "start_1_based": 1}]}, True),
-        ({"prompt_anchors": [{"start_1_based": 1}, {"start_1_based": 900}]}, False),
+        (
+            {"prompt_anchors": [{"name": "left", "start_1_based": 1}, {"name": "right", "start_1_based": 900}]},
+            False,
+        ),
+        (
+            {"prompt_anchors": [{"name": "valid", "start_1_based": 1}, {"name": "", "start_1_based": 1}]},
+            False,
+        ),
+        (
+            {"prompt_anchors": [{"name": "origin", "start_1_based": 1}, {"name": "same-origin", "start_1_based": 1}]},
+            True,
+        ),
     ],
 )
 def test_likelihood_origin_provenance(tmp_path, selection, comparable):

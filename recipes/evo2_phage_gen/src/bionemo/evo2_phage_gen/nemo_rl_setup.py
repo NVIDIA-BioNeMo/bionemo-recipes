@@ -158,7 +158,7 @@ def assert_nemo_rl_runtime() -> None:
     # Importing the Megatron worker transitively loads Transformer Engine, which requires the
     # driver library that BuildKit intentionally does not mount. Patch application is atomic,
     # and source-level tests verify the corresponding worker/offload hooks directly.
-    if getattr(nemo_rl_package, "EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION", 0) < 2:
+    if getattr(nemo_rl_package, "EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION", 0) < 3:
         raise RuntimeError("NeMo-RL is missing required Evo2 colocated-refit lifecycle support")
     if getattr(nemo_rl_package, "EVO2_RESPONSE_TERMINATION_VERSION", 0) < 2:
         raise RuntimeError("NeMo-RL is missing exact generated-response termination support")

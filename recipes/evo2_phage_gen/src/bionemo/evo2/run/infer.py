@@ -1346,6 +1346,14 @@ def _native_stop_token_ids(tokenizer: Any) -> set[int]:
             _add_token_id(token_id.tolist())
             return
         if isinstance(token_id, str):
+            # Unknown aliases may map to UNK; only exact vocabulary entries are stop tokens.
+            for owner in (tokenizer, getattr(tokenizer, "tokenizer", None)):
+                get_vocab = getattr(owner, "get_vocab", None)
+                if callable(get_vocab):
+                    mapped_id = get_vocab().get(token_id)
+                    if mapped_id is not None:
+                        stop_token_ids.add(int(mapped_id))
+                    return
             mapped_id = None
             for token_lookup_owner in (tokenizer, getattr(tokenizer, "tokenizer", None)):
                 token_to_id = getattr(token_lookup_owner, "token_to_id", None)

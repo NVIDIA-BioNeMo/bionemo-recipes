@@ -705,6 +705,14 @@ def finalize_rollout_report(
             for anchor in prompt_anchors
         )
     )
+    if origins_known:
+        from bionemo.evo2_phage_gen.generation import PromptAnchor
+
+        try:
+            for anchor in prompt_anchors:
+                PromptAnchor(**anchor)
+        except (TypeError, ValueError):
+            origins_known = False
     mixed_circular_origins = origins_known and len({anchor["start_1_based"] for anchor in prompt_anchors}) > 1
     comparable_origins = origins_known and not mixed_circular_origins
 

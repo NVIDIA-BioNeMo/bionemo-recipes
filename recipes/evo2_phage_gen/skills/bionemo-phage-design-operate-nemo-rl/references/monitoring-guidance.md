@@ -47,6 +47,8 @@ For memory failures, check PyTorch allocation/reservation, other device processe
 
 With native cache offload, confirm state is deallocated after generation, restored before reuse, and graphs recaptured when storage changes. The default-false `preserve_optimizer_state_during_generation` option avoids Adam transfers but still offloads gradients; test its actual peak memory through train→generation→train before enabling it.
 
+Also verify decode graph managers are detached during training, including with persistent caches. Lifecycle version 3 honors nonpersistent model offload even when an adapter reports graph residency; use the matching source patch and recipe adapter. See the [long-context compute guidance](../../bionemo-phage-design-adapt-execution/references/compute-guidance.md) for fresh-worker mask checks.
+
 ## Keep useful results
 
 Preserve the latest resumable checkpoint, aggregate best, and the best positive `all_objectives_max_score_rate` independently. Zero attainment can coexist with useful shaping progress. Final screening establishes acceptance. Record the selected checkpoint and why; use durable training logs/checkpoints to distinguish a tracker outage from a stalled trainer.

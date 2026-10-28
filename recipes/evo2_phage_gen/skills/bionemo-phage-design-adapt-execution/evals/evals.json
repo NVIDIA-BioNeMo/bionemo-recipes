@@ -2,6 +2,19 @@
   "skill_name": "bionemo-phage-design-adapt-execution",
   "evals": [
     {
+      "id": "bionemo-phage-design-adapt-execution-010-long-context-worker",
+      "prompt": "Review a 65,536-token Evo2 RL qualification. The driver preprocesses successfully after a local modification, but a newly spawned Ray worker allocates [1,1,L,L] boolean attention storage. After generation with kv_cache_management_mode=offload, the next training forward enters a decode CUDA graph; an adapter also reports that its model storage must remain resident. A teammate proposes halving context and ignoring EOS. Give the smallest repair and qualification proposal; do not launch anything.",
+      "expected_output": "A worker-local preprocessing and graph/cache lifecycle repair that preserves the scientific workload.",
+      "assertions": [
+        "Identifies the approximately4 GiB quadratic boolean mask and installs implicit-causal inputs in fresh workers as well as the driver, preserving absolute positions and action/loss masks.",
+        "Detaches decode-only graph managers before training and restores them for subsequent generation; distinguishes manager reuse from invalidating runners tied to released cache storage.",
+        "Honors nonpersistent model offload despite an adapter residency request and uses matching patched runtime/adapter code, rather than relying on a configuration label.",
+        "Rejects context reduction or EOS removal as equivalent repairs; requires causal output/gradient parity, fresh-worker checks and repeated full-shape rollout/replay/update plus save/reload evidence before claiming qualification."
+      ],
+      "expected_skill": "bionemo-phage-design-adapt-execution",
+      "expected_script": null
+    },
+    {
       "id": "bionemo-phage-design-adapt-execution-001-local-preflight",
       "prompt": "Review this local execution proposal for full-genome SFT followed by RL; provide corrected paths and sizing without launching. Eight80-GiB GPUs are visible, but an existing job owns GPUs0–3 until18:00. /repo is read-only; /scratch is writable with 1.5 TB free and is erased at job exit; /results is durable/writable with 620 GB free; /cache is durable/writable with 110 GB free. Estimated footprint: downloaded assets180 GB, retained checkpoints240 GB, logs/final outputs20 GB, disposable scorer work300 GB. The draft stores everything in /scratch and requests all eight GPUs now. Full-shape measurements exist only for eight GPUs. The approved context and global batch must remain fixed.",
       "expected_output": "A feasible storage and execution decision that accounts for occupancy, durability, and missing four-GPU measurements.",

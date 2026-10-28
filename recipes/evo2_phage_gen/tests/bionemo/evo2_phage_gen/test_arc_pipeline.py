@@ -351,14 +351,25 @@ def test_coordinate_parity_detects_half_fix(tmp_path, strand):
 
 @pytest.mark.parametrize("orf_hits", [False, True])
 @pytest.mark.parametrize("with_hits", [False, True])
-def test_pident_metrics_exact_ids(tmp_path, orf_hits, with_hits):
+@pytest.mark.parametrize("context_blank", [False, True])
+def test_pident_metrics_exact_ids(tmp_path, monkeypatch, orf_hits, with_hits, context_blank):
     """Execute the maintained patch's added metrics function, without external assets."""
-    added = (
-        arc_pipeline.DEFAULT_ARC_PIPELINE_PATCH.read_text()
-        .split("+def save_mmseqs_pident_metrics(", 1)[1]
-        .split("\n\n", 1)[0]
-    )
-    source = "def save_mmseqs_pident_metrics(" + "\n".join(line.removeprefix("+") for line in added.splitlines())
+    if context_blank:
+        patch = arc_pipeline.DEFAULT_ARC_PIPELINE_PATCH.read_text()
+        # A normal unified diff prefixes unchanged blank lines with a space.
+        changed = patch.replace("\n\n\n def calculate_pident_to_ref", "\n \n \n def calculate_pident_to_ref", 1)
+        assert changed != patch
+        alternate = tmp_path / "context-blank.patch"
+        alternate.write_text(changed)
+        monkeypatch.setattr(arc_pipeline, "DEFAULT_ARC_PIPELINE_PATCH", alternate)
+    marker = "+def save_mmseqs_pident_metrics("
+    added = marker + arc_pipeline.DEFAULT_ARC_PIPELINE_PATCH.read_text().split(marker, 1)[1]
+    source_lines = []
+    for line in added.splitlines():
+        if not line.startswith("+"):
+            break
+        source_lines.append(line[1:])
+    source = "\n".join(source_lines)
     namespace = {"pd": pd}
     exec(compile(source, str(arc_pipeline.DEFAULT_ARC_PIPELINE_PATCH), "exec"), namespace)
     column = "tropism_protein_mmseqs_percent_identity"

@@ -14,10 +14,50 @@
 # limitations under the License.
 
 import warnings
+from types import SimpleNamespace
 
 import pytest
+import torch
+import torch.nn.functional as functional
 
 from bionemo.evo2.models.megatron.hyena import subquadratic_safety as sqs
+
+
+def test_preflight_uses_repaired_model_kernel(monkeypatch):
+    import importlib
+
+    from bionemo.evo2.models.megatron.hyena import hyena_utils
+
+    subq = importlib.import_module("subquadratic_ops_torch.causal_conv1d")
+    calls = []
+
+    def convolution(u, weight):
+        calls.append(u.shape)
+        return functional.conv1d(u, weight.unsqueeze(1), padding=weight.shape[-1] - 1, groups=u.shape[1])[
+            ..., : u.shape[-1]
+        ]
+
+    # Reproduce cuDNN's same-named module replacing its cached callable.
+    monkeypatch.setattr(subq, "_NHW_OP", SimpleNamespace(causal_conv1d=convolution), raising=False)
+
+    def raw_kernel(*args, **kwargs):
+        return subq._NHW_OP(*args, **kwargs)
+
+    monkeypatch.setattr(subq, "causal_conv1d", raw_kernel)
+    monkeypatch.setattr(hyena_utils, "_subq_causal_conv1d_module", subq)
+    monkeypatch.setattr(hyena_utils, "_subq_causal_conv1d", raw_kernel)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *_args: None)
+    cpu_device = torch.device("cpu")
+    monkeypatch.setattr(torch, "device", lambda *_args: cpu_device)
+    sqs.ensure_subquadratic_causal_conv1d_supported.cache_clear()
+    try:
+        sqs.ensure_subquadratic_causal_conv1d_supported()
+        assert subq._NHW_OP is convolution
+        assert calls == [torch.Size([1, 4, 10])]
+    finally:
+        sqs.ensure_subquadratic_causal_conv1d_supported.cache_clear()
 
 
 def test_cuda_version_to_str():

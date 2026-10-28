@@ -218,7 +218,7 @@ assert torch.equal(ordinary_mask, replay_mask)
     assert "def _generation_adapter_model_refit_complete(" in generation_worker
     assert "def _generation_adapter_preserves_optimizer_state(" in generation_worker
     package_init = (build / "nemo_rl" / "__init__.py").read_text()
-    assert "EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION = 2" in package_init
+    assert "EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION = 3" in package_init
 
 
 def test_environment_metrics_receive_one_task_namespace(tmp_path: Path) -> None:
@@ -442,7 +442,7 @@ def test_runtime_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def import_module(name):
         if name == "nemo_rl":
-            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=2, EVO2_RESPONSE_TERMINATION_VERSION=2)
+            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=3, EVO2_RESPONSE_TERMINATION_VERSION=2)
         if name.endswith(".grpo"):
             return SimpleNamespace(split_environment_timing_metrics=lambda metrics: (metrics, {}))
         if name.endswith(".datasets.utils"):
@@ -467,7 +467,7 @@ def test_runtime_capabilities_require_external_dataset_resolution(monkeypatch: p
 
     def import_module(name):
         if name == "nemo_rl":
-            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=2, EVO2_RESPONSE_TERMINATION_VERSION=2)
+            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=3, EVO2_RESPONSE_TERMINATION_VERSION=2)
         if name.endswith(".grpo"):
             return SimpleNamespace(split_environment_timing_metrics=lambda metrics: (metrics, {}))
         if name.endswith(".datasets.utils"):
@@ -495,7 +495,7 @@ def test_runtime_requires_sampled_action_support(monkeypatch: pytest.MonkeyPatch
 
     def import_module(name):
         if name == "nemo_rl":
-            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=2, EVO2_RESPONSE_TERMINATION_VERSION=2)
+            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=3, EVO2_RESPONSE_TERMINATION_VERSION=2)
         if name.endswith(".grpo"):
             return SimpleNamespace(split_environment_timing_metrics=lambda metrics: (metrics, {}))
         if name.endswith(".datasets.utils"):
@@ -513,7 +513,8 @@ def test_runtime_requires_sampled_action_support(monkeypatch: pytest.MonkeyPatch
         nemo_rl_setup.assert_nemo_rl_runtime()
 
 
-def test_runtime_requires_current_colocated_refit_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("version", [1, 2])
+def test_runtime_requires_current_colocated_refit_lifecycle(monkeypatch: pytest.MonkeyPatch, version: int) -> None:
     """A stale install must not bypass the current colocated-refit lifecycle."""
 
     def init_ray(log_dir=None, *, include_dashboard=True, num_cpus=None):
@@ -521,7 +522,7 @@ def test_runtime_requires_current_colocated_refit_lifecycle(monkeypatch: pytest.
 
     def import_module(name):
         if name == "nemo_rl":
-            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=1)
+            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=version)
         if name.endswith(".grpo"):
             return SimpleNamespace(split_environment_timing_metrics=lambda metrics: (metrics, {}))
         if name.endswith(".datasets.utils"):
@@ -549,7 +550,7 @@ def test_runtime_requires_exact_response_termination(monkeypatch: pytest.MonkeyP
 
     def import_module(name):
         if name == "nemo_rl":
-            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=2)
+            return SimpleNamespace(EVO2_GRAPH_STORAGE_LIFECYCLE_VERSION=3)
         if name.endswith(".grpo"):
             return SimpleNamespace(split_environment_timing_metrics=lambda metrics: (metrics, {}))
         if name.endswith(".datasets.utils"):
