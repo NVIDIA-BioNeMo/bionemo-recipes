@@ -112,7 +112,9 @@ upstream setting for larger prompts. The separate `answer` is the ground-truth v
 overrides the default `\boxed{...}` training response; prior assistant messages remain context. Prepared
 manifests and caches go under ignored `artifacts/data/`. The cache header
 records the raw dataset hash and requested encoder layer/pooling; feature
-digests identify the returned values. It does not claim to verify the endpoint's
+digests identify the returned values. Optional `--encoder-model` and `--encoder-revision` flags
+record your declared model version in the header and cache contract. Omitted
+values remain unknown and preparation continues. It does not claim to verify the endpoint's
 checkpoint identity. For experiments, add verified model provenance using
 Stitch's artifact configuration.
 

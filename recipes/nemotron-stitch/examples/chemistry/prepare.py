@@ -34,7 +34,12 @@ LAYERS = ("molecule_fingerprint", "atom_concat", "bond_from_atom", "bond_from_bo
 
 
 def prepare(
-    client: Any, source: str | Path = "data/sanity.jsonl", output: str | Path = "artifacts/data"
+    client: Any,
+    source: str | Path = "data/sanity.jsonl",
+    output: str | Path = "artifacts/data",
+    *,
+    encoder_model: str = "",
+    encoder_revision: str = "",
 ) -> dict[str, Any]:
     """Publish a padded graph cache and three training-stage manifests."""
     from rdkit import Chem
@@ -122,7 +127,7 @@ def prepare(
         encode_inputs,
         normalize,
         partitions=tuple(Partition(stage, "train", stage, 0, len(rows)) for stage in ("alignment", "sft", "grpo")),
-        encoder={"request_layers": LAYERS},
+        encoder={"request_layers": LAYERS, "repo_id": encoder_model, "revision": encoder_revision},
         dataset={"revision": sha256_json(rows)},
         cache_root=Path(output) / "feature-cache",
         manifest_path=Path(output) / "manifest.jsonl",
@@ -136,9 +141,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="data/sanity.jsonl")
     parser.add_argument("--output", default="artifacts/data")
+    parser.add_argument("--encoder-model", default="", help="Optional declared encoder model/checkpoint ID")
+    parser.add_argument("--encoder-revision", default="", help="Optional declared encoder revision")
     args = parser.parse_args()
     client = KERMTClient(os.environ["KERMT_URL"], token=os.environ.get("KERMT_TOKEN") or None, timeout=900)
-    print(json.dumps(prepare(client, args.input, args.output), indent=2))
+    result = prepare(
+        client, args.input, args.output, encoder_model=args.encoder_model, encoder_revision=args.encoder_revision
+    )
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

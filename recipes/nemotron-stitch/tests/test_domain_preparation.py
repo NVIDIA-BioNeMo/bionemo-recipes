@@ -153,6 +153,40 @@ def test_raw_examples_through_http_cache_and_training(domain, endpoint, tmp_path
     _check_prepared_training(domain, tmp_path, monkeypatch)
 
 
+@pytest.mark.parametrize("domain", ["genetics", "chemistry"])
+@pytest.mark.parametrize("declared", [False, True])
+def test_optional_encoder_metadata(domain, declared, endpoint, tmp_path, monkeypatch, capsys):
+    url, _, _ = endpoint
+    monkeypatch.setenv("EVO2_URL" if domain == "genetics" else "KERMT_URL", url)
+    argv = [
+        "prepare.py",
+        "--input",
+        str(ROOT / "examples" / domain / "data/sanity.jsonl"),
+        "--output",
+        str(tmp_path / "prepared"),
+    ]
+    if domain == "genetics":
+        config = tmp_path / "alignment.yaml"
+        config.write_text(
+            json.dumps(
+                {
+                    "model": {"mm_projectors": [{"mm_hidden_size": 1920}]},
+                    "dataset": {"chat_template_kwargs": {"pooling_window": 64}},
+                }
+            )
+        )
+        argv += ["--config", str(config)]
+    if declared:
+        argv += ["--encoder-model", "example/encoder", "--encoder-revision", "demo-v2"]
+    monkeypatch.setattr("sys.argv", argv)
+    _preparation(domain).main()
+    assert json.loads(capsys.readouterr().out)["records"] == 24
+    header = json.loads((tmp_path / "prepared/manifest.header.json").read_text())
+    cache = open_feature_cache(tmp_path / "prepared/feature-cache")
+    assert header["encoder"]["repo_id"] == cache.contract.checkpoint_id == ("example/encoder" if declared else "")
+    assert header["encoder"]["revision"] == cache.contract.revision == ("demo-v2" if declared else "")
+
+
 def _check_prepared_training(domain, tmp_path, monkeypatch):
     from test_domain_examples import _Tokenizer
 

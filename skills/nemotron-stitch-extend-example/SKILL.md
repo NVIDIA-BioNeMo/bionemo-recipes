@@ -69,6 +69,9 @@ pooling window; use a matching cache and encoder width. Gene preparation uses
 `STITCH_ENCODER_WIDTH` and `STITCH_POOLING_WINDOW` variables no longer configure
 them. New caches are required when geometry changes. Chemistry preserves
 canonical atom/bond indices and separate molecule, atom, and bond projectors.
+Both demos accept optional `--encoder-model` and `--encoder-revision` flags
+to record declared model metadata in the header and cache contract. Omitted
+values stay unknown and preparation continues; these flags do not verify the endpoint.
 Per-record `chat_template_kwargs` override collator defaults for native
 reasoning/direct-answer mixtures. `PackedManifestFeatureDataset` accepts a
 sample `collate_fn` for multiple projectors and rebases their scatter indices.

@@ -136,6 +136,13 @@ hf download nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 \
   --local-dir artifacts/models/lightning-30b-bf16
 ```
 
+Both preparation scripts accept optional `--encoder-model MODEL_ID` and
+`--encoder-revision REVISION` flags. These record your declared encoder identity
+in the manifest header and cache contract, so different declarations produce
+different cache identities. Omitted values stay unknown (empty strings) and
+preparation continues. These settings record metadata; they do not select or verify
+the model running at the endpoint.
+
 Preparation makes **eight requests**, one per raw input, then publishes one
 manifest with 24 stage-tagged records and separate `manifest-{stage}-train.jsonl`
 files. Every cached tensor is checksummed. Generated data lives in

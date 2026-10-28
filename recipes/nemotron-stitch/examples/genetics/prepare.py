@@ -41,6 +41,8 @@ def prepare(
     *,
     encoder_width: int,
     pooling_window: int = POOLING_WINDOW,
+    encoder_model: str = "",
+    encoder_revision: str = "",
 ) -> dict[str, Any]:
     """Publish cached features and alignment/SFT/GRPO views of the tiny dataset."""
     if pooling_window < 1:
@@ -95,7 +97,13 @@ def prepare(
         ),
         normalize,
         partitions=tuple(Partition(stage, "train", stage, 0, len(rows)) for stage in ("alignment", "sft", "grpo")),
-        encoder={"layer": 12, "request": output_spec, "hidden_size": encoder_width},
+        encoder={
+            "layer": 12,
+            "request": output_spec,
+            "hidden_size": encoder_width,
+            "repo_id": encoder_model,
+            "revision": encoder_revision,
+        },
         dataset={"revision": sha256_json(rows)},
         cache_root=Path(output) / "feature-cache",
         manifest_path=Path(output) / "manifest.jsonl",
@@ -110,6 +118,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="data/sanity.jsonl")
     parser.add_argument("--output", default="artifacts/data")
+    parser.add_argument("--encoder-model", default="", help="Optional declared encoder model/checkpoint ID")
+    parser.add_argument("--encoder-revision", default="", help="Optional declared encoder revision")
     parser.add_argument("--config", default="configs/alignment.yaml")
     args = parser.parse_args()
     config = OmegaConf.load(args.config)
@@ -120,6 +130,8 @@ def main() -> None:
         args.output,
         encoder_width=int(config.model.mm_projectors[0].mm_hidden_size),
         pooling_window=int(config.dataset.chat_template_kwargs.pooling_window),
+        encoder_model=args.encoder_model,
+        encoder_revision=args.encoder_revision,
     )
     print(json.dumps(result, indent=2))
 

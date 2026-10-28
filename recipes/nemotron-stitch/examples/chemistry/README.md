@@ -141,7 +141,9 @@ prior assistant turns. Content can be a plain text string or a list of text and
 The separate `answer` supplies the next assistant response to train or score.
 Prepared manifests and checksummed caches live under ignored `artifacts/data/`.
 The header records the raw dataset hash and requested layers; returned feature
-digests identify the values. It does not claim to verify the endpoint
+digests identify the values. Optional `--encoder-model` and `--encoder-revision` flags
+record your declared model version in the header and cache contract. Omitted
+values remain unknown and preparation continues. It does not claim to verify the endpoint
 checkpoint. Use verified artifact provenance for experiments. These eight
 examples test integration, not chemistry performance.
 

@@ -16,7 +16,7 @@ NVIDIA
 Locate a compatible BioNeMo Recipes checkout, identify the application-owned
 encoder, data, and prompt boundaries, and build a small example with explicit
 training and artifact handoffs. Use the genetics and chemistry examples for
-typed domain chats, YAML-owned encoder settings, native-processor checkpoint
+typed domain chats, optional declared encoder metadata, YAML-owned encoder settings, native-processor checkpoint
 saves, worker serialization, isolated GRPO checkpoint paths, bounded SFT
 checkpoint retention, and packed full decoder training. Keep the upstream-gap reference limited to substantive open
 custom-modality integration gaps with evidence and a deletion condition.
