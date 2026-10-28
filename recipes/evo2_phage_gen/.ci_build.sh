@@ -4,19 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ARM Biotite source builds need hatch-vcs from build_requirements.txt, which pulls in
-# setuptools-scm. Its automatic Git file-discovery hook also runs for this recipe's
-# editable install under --no-build-isolation, exposing CI checkout ownership mismatches.
-# If ARM Biotite source builds are no longer needed, remove those Hatch build backends
-# and this trust block, provided no other build dependency still activates setuptools-scm.
-# Trust only this checkout for build subprocesses, preserving inherited Git settings.
-# Do not change global Git configuration or disable ownership checks for other repositories.
-ci_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
-ci_git_config_index="${GIT_CONFIG_COUNT:-0}"
-export "GIT_CONFIG_KEY_${ci_git_config_index}=safe.directory"
-export "GIT_CONFIG_VALUE_${ci_git_config_index}=$ci_repo_root"
-export GIT_CONFIG_COUNT="$((ci_git_config_index + 1))"
-
 # FIXME: Fix for "No such file or directory: /workspace/TransformerEngine"
 #  Remove once bug has been addressed in the nvidia/pytorch container.
 rm -f /usr/local/lib/python*/dist-packages/transformer_engine-*.dist-info/direct_url.json
@@ -36,6 +23,9 @@ source ./cxx20_build_env.sh
 
 # 4. Install build requirements against the Transformer Engine already supplied by the image. An image without
 # Transformer Engine intentionally produces an empty constraints file.
+# ARM Biotite source-build backends remain opt-in in build_requirements.txt: hatch-vcs
+# brings in setuptools-scm's Git file finder, which can reject CI checkout ownership.
+# GIT_CONFIG_* environment overrides do not fix this; the SCM helper strips them.
 if ! pip freeze | grep -E '^transformer[-_]engine([= @]|$)' > pip-constraints.txt; then
     : > pip-constraints.txt
     echo "transformer-engine is not installed; continuing with an empty pip-constraints.txt" >&2

@@ -8,13 +8,15 @@ Match the container CUDA runtime to the host driver before building. If that com
 
 The external-asset installer selects native Linux x86_64 or aarch64 downloads for MMseqs2-GPU, DIAMOND, HMMER, and AMRFinderPlus. It keeps non-x86 tools in architecture-qualified extraction directories so copied x86 caches are not reused accidentally. Before scientific stages, verify the selected executables' architecture and versions. A CPU architecture other than x86_64 or aarch64 still needs explicit archive mappings and validation; changing only the base container is insufficient.
 
-Source-built Biotite dependencies under `--no-build-isolation` require Hatchling, hatch-vcs, and
-hatch-cython, so `build_requirements.txt` keeps those backends active. On aarch64, a packaging
-fallback was validated on 2026-08-21: if the resolver encounters the known Biotite/Biotraj wheel
-and sdist-metadata gap, enable the commented `biotite 0.41.2` and pinned `biotraj 1.2.2` examples
-in `pyproject.toml`. A root-owned container using a user-owned bind mount may also need
-command-scoped Git trust for that exact checkout. Leave those source pins disabled when normal
-wheels resolve.
+Normal wheel installs leave the Hatch backends in `build_requirements.txt` commented out.
+On aarch64, a packaging fallback was validated on 2026-08-21: if the resolver encounters the
+known Biotite/Biotraj wheel and sdist-metadata gap, enable the commented `biotite 0.41.2` and
+pinned `biotraj 1.2.2` examples in `pyproject.toml` together with Hatchling, hatch-vcs, and
+hatch-cython in `build_requirements.txt` for `--no-build-isolation`. Leave this fallback disabled
+when normal wheels resolve. `hatch-vcs` also installs `setuptools-scm`, whose Git file finder
+affects the recipe's editable build. If that opt-in path encounters mismatched checkout
+ownership, use an ownership-aligned checkout or trust only that checkout in the disposable
+build container's Git configuration; the SCM helper strips `GIT_CONFIG_*` environment overrides.
 
 Build architecture-specific compiled extensions, such as dataset helpers, while the image or build
 environment is writable, then probe imports as the actual non-root runtime UID. Do not defer

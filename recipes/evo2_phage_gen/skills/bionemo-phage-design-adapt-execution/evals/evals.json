@@ -73,7 +73,7 @@
       "assertions": [
         "Rejects reuse of the x86_64 cache and uses the maintained aarch64-selected downloads/architecture-qualified paths for affected native assets.",
         "Uses the documented biotite0.41.2/biotraj1.2.2 fallback for the observed packaging failure, not an unconditional pin for every platform.",
-        "Includes the active Hatchling, hatch-vcs, and hatch-cython build prerequisites for --no-build-isolation, instead of treating the Python error as a GPU-driver problem.",
+        "Explicitly enables the commented Hatchling, hatch-vcs, and hatch-cython prerequisites for this observed source-build fallback under --no-build-isolation; leaves them disabled for normal wheel installs instead of treating the Python error as a GPU-driver problem.",
         "Requires native executable architecture/version checks and import tests in the actual runtime; preserves working wheel paths where no fallback is needed."
       ],
       "expected_skill": "bionemo-phage-design-adapt-execution",
