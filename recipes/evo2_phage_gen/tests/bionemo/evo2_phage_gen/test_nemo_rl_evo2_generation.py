@@ -406,6 +406,9 @@ def test_evo2_adapter_emits_replicated_batched_data_from_every_model_parallel_ra
     sampling_params = [SimpleNamespace(num_tokens_to_generate=2)]
     parsed = object()
     group_timings = {
+        "timing_scope": "native_generation_group",
+        "timing_group_id": "native-call-00000000-group-00000000",
+        "timing_request_count": 2,
         "prefill_elapsed_s": 0.25,
         "decode_elapsed_s": 0.75,
         "generation_elapsed_s": 1.0,
@@ -467,9 +470,12 @@ def test_evo2_adapter_emits_replicated_batched_data_from_every_model_parallel_ra
 
 
 @pytest.mark.parametrize("cache_mode", ["persist", "offload", "recompute"])
-def test_finish_generation_reuses_native_engine_across_cache_lifecycle(monkeypatch, cache_mode):
+@pytest.mark.parametrize("cuda_available", [False, True], ids=["cpu", "cuda"])
+def test_finish_generation_reuses_native_engine_across_cache_lifecycle(monkeypatch, cache_mode, cuda_available):
     adapter = Evo2MegatronGenerationAdapter({"seed": 17})
     assert adapter.bypasses_persistent_mcore_engine is True
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
 
     class _Context:
         def __init__(self):
@@ -492,6 +498,10 @@ def test_finish_generation_reuses_native_engine_across_cache_lifecycle(monkeypat
             self.reinitialize_count += 1
 
     context = _Context()
+    # The fake context owns no real GPU tensors. Model its allocator footprint too,
+    # so the release check runs on both CPU-only hosts and GPU CI runners.
+    memory_allocated = Mock(side_effect=lambda: (8 if context.is_tensor_state_allocated else 2) * 1024**2)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", memory_allocated)
     model = SimpleNamespace()
     native_dynamic = SimpleNamespace(
         forward_model=model,
@@ -559,9 +569,21 @@ def test_finish_generation_reuses_native_engine_across_cache_lifecycle(monkeypat
         )
         assert [result.generated_tokens for result in results] == [[65], [65]]
         adapter.finish_worker(worker)
+        if cuda_available and cache_mode != "persist":
+            assert native_dynamic.last_cache_release_evidence == {
+                "mode": cache_mode,
+                "tensor_state_allocated": False,
+                "allocated_before_mib": 8,
+                "allocated_after_mib": 2,
+            }
 
     assert worker._evo2_native_dynamic_components is native_dynamic
     assert context.reset_count == 2
+    if cuda_available and cache_mode != "persist":
+        assert memory_allocated.call_count == 4
+    else:
+        memory_allocated.assert_not_called()
+        assert not hasattr(native_dynamic, "last_cache_release_evidence")
     if cache_mode == "persist":
         assert context.deallocate_count == 0
         assert context.reinitialize_count == 0
@@ -1029,6 +1051,11 @@ def test_evo2_adapter_forwards_generation_controls(monkeypatch):
                 generated_log_probs=[-0.1, -0.2],
                 finish_reason="stop",
                 stopped_on_eos=True,
+                timings={
+                    "timing_scope": "native_generation_group",
+                    "timing_group_id": f"native-call-00000000-group-{idx:08d}",
+                    "timing_request_count": 1,
+                },
                 memory={
                     "generation_peak_allocated_bytes": 123,
                     "generation_peak_reserved_bytes": 456,
@@ -1052,10 +1079,16 @@ def test_evo2_adapter_forwards_generation_controls(monkeypatch):
     assert results[0].generated_tokens == [65, 0]
     assert results[0].generated_log_probs == [-0.1, -0.2]
     assert results[0].stopped_on_eos is True
+    assert [result.timings["timing_group_id"] for result in results] == [
+        "native-call-00000000-group-00000000",
+        "native-call-00000000-group-00000001",
+    ]
     assert results[0].memory == {
         "generation_peak_allocated_bytes": 123,
         "generation_peak_reserved_bytes": 456,
     }
+    assert worker._evo2_generation_timing["memory/train/generation/evo2_generation_peak_allocated_bytes"] == 123
+    assert worker._evo2_generation_timing["memory/train/generation/evo2_generation_peak_reserved_bytes"] == 456
 
 
 @pytest.mark.parametrize(
