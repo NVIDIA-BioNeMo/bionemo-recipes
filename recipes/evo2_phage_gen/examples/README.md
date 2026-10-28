@@ -117,7 +117,8 @@ With cached model weights and databases, the intended budget is a few hours on
 memory or throughput qualification. Without an explicit result root it uses
 `results/phix174-8xh100-origin-quick`, separate from the normal experiment.
 Resume with the same preset and overrides; completed-stage markers work normally.
-Quick mode bounds each monitored subprocess to one hour so a wedged trainer fails
+Quick mode bounds monitored subprocesses to one hour, except external asset preparation
+(large database downloads/builds remain unbounded), so a wedged trainer fails
 instead of emitting heartbeats indefinitely. Set `STAGE_TIMEOUT_SECONDS` to change
 that bound (0 disables it); normal runs default to 0. A timeout is an execution
 failure to investigate, not a reason to mark the stage complete.
@@ -347,7 +348,8 @@ that PyTorch allocated memory decreased; accepting an offload config is not rele
 Persist-cache deployments need lifecycle-aware capacity qualification. Initial validation left
 about 12.55 GiB more allocated (152.25 versus 139.70 GiB)
 in early single-GB300 trials, and roughly 29.9 GiB of device-wide framebuffer use made their
-capacity failures inconclusive. A corrected `val_at_start=false`, offload-cache run at MBS32 then
+capacity failures inconclusive. At the earlier **5,632-token context**, a corrected
+`val_at_start=false`, offload-cache run at MBS32 then
 completed two full optimizer-resident rollout/update cycles despite that external baseline. The
 restarted TP1 production trajectory subsequently completed steps 11-13 at MBS32 with clean 256-row
 replay audits while still carrying roughly 42-44 GiB of external device use. This establishes MBS32
@@ -355,8 +357,10 @@ for the corrected no-leading-validation/offload profile, but it is not a clean-d
 cycle two, `finish_generation` reduced PyTorch allocation from 202,501 to 75,431 MiB and device use
 from 243,653 to 114,613 MiB; replay over 921,250 active tokens had no masks, nonfinite values,
 large deltas, or page-phase elevation. This qualifies MBS32 only for that measured GB300 profile
-and directly validates native cache release; persist-cache MBS32 remains unproven. MBS64 exceeds
-the TP1 signed-int32 GLU limit, making MBS32 the largest robust candidate on that path. Do not
+and directly validates native cache release; persist-cache MBS32 remains unproven.
+At the shipped **6,144-token context**, the TP1 signed-int32 GLU bound is
+`floor((2^31 - 1) / (6,144 × 11,008)) = 31`, so **MBS16** is the largest power-of-two
+candidate; MBS32 is invalid at this context, regardless of available memory. Do not
 transfer it to H100: start with training, reach optimizer steady state, run a scheduled validation,
 and then complete a subsequent update on the deployed topology.
 Expandable segments fix fragmentation, not retained-state capacity.
@@ -430,8 +434,9 @@ Final likelihood scoring runs before deduplication and uses the validated direct
 remains available for exact SFT resume. The `rollout/accepted_candidates.fasta`
 contains the final filter-passing, deduplicated candidates for further analysis. When its scores are
 informative, not strongly length-associated, and drawn from one circular origin, this FASTA may be
-ordered by mean per-nucleotide likelihood under the selected SFT model. Mixed-origin runs retain
-generation order because whole-sequence language-model likelihood depends on the linearized origin;
+ordered by mean per-nucleotide likelihood under the selected SFT model. Mixed-origin runs and
+runs without valid `prompt_anchors` provenance retain generation order and report scores as
+non-comparable because whole-sequence language-model likelihood depends on the linearized origin;
 the scores remain recorded as diagnostics.
 The final rollout and the inner GDPO rollout both use packed dynamic prefill and batched recurrent
 decode for medium/long generation. GDPO assigns 96 requests to each of eight data-parallel replicas

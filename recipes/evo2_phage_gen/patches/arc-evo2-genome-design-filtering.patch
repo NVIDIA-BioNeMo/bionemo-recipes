@@ -62,7 +62,7 @@
      # Drop the sequences column in mmseqs_df (if any) since we don't want to redundantly add it to sequences_df
      if 'sequence' in mmseqs_df.columns:
          mmseqs_df = mmseqs_df.drop(columns=['sequence'])
-@@ -771,6 +763,34 @@
+@@ -771,6 +763,30 @@
      ]
 
      return filtered_df
@@ -82,14 +82,10 @@
 +        metrics_hits_df = metrics_hits_df.drop(columns=['sequence'])
 +    if 'id_prompt' in metrics_hits_df.columns and not metrics_hits_df.empty and 'ORF' in metrics_hits_df['id_prompt'].iloc[0]:
 +        metrics_hits_df['id_prompt'] = metrics_hits_df['id_prompt'].str.split('_').str[:-1].str.join('_')
-+        metrics_hits_df = metrics_hits_df.loc[
-+            metrics_hits_df.groupby('id_prompt')[pident_column].idxmax()
-+        ].reset_index(drop=True)
 +
-+    for index, row in metrics_hits_df.iterrows():
-+        matching_prompt = sequences_df['id_prompt'][sequences_df['id_prompt'].str.contains(row['id_prompt'], regex=False)]
-+        if not matching_prompt.empty:
-+            metrics_hits_df.at[index, 'id_prompt'] = matching_prompt.values[0]
++    id_by_token = dict(zip(sequences_df['id_prompt'].str.split().str[0], sequences_df['id_prompt']))
++    metrics_hits_df['id_prompt'] = metrics_hits_df['id_prompt'].map(id_by_token)
++    metrics_hits_df = metrics_hits_df.groupby('id_prompt', as_index=False)[pident_column].max()
 +
 +    metrics_df = pd.merge(sequences_df[["id_prompt"]], metrics_hits_df[["id_prompt", pident_column]], on='id_prompt', how='left')
 +    metrics_df[pident_column] = metrics_df[pident_column].fillna(0.0)

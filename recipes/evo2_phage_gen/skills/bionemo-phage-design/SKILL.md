@@ -38,6 +38,8 @@ For a requested quick live pipeline check, use the example's `--quick-e2e` prese
 result root. It reduces data, update and rollout counts while retaining all stages, whole-genome
 budgets and QC rules. Follow the README artifact checklist; report it as execution evidence,
 not a learning result or a full-batch capacity qualification.
+Quick-mode monitored work defaults to a one-hour timeout, but stage-00 external
+asset preparation is exempt because first-time database downloads/builds can take longer.
 
 ## Keep the scientific endpoint visible
 

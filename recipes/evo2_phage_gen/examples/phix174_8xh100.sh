@@ -809,7 +809,8 @@ cd "${RECIPE_ROOT}"
 
 stage_00() {
   run evo2_phage_download_sft_data --include-raw
-  monitored 'external asset preparation' "${RESULT_ROOT}/inputs/external-assets.log" \
+  # First-time database downloads/builds can exceed the quick-mode stage budget.
+  STAGE_TIMEOUT_SECONDS=0 monitored 'external asset preparation' "${RESULT_ROOT}/inputs/external-assets.log" \
     evo2_phage_prepare_external_assets --external-dir data/external --bin-dir data/external/bin \
     --download-large-databases --prepare-phrogs-consensus-database --prepare-phrogs-member-database --with-safety \
     --pharokka-database-url "${PHAROKKA_DATABASE_URL}" \

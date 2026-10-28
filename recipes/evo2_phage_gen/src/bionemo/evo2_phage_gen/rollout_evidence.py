@@ -696,8 +696,17 @@ def finalize_rollout_report(
         sampling_payload = yaml.safe_load(Path(sampling_selection).read_text())
         if not isinstance(sampling_payload, dict):
             raise ValueError("sampling selection must be a YAML mapping")
-    prompt_anchors = sampling_payload.get("prompt_anchors", []) if sampling_payload else []
-    mixed_circular_origins = isinstance(prompt_anchors, list) and len(prompt_anchors) > 1
+    prompt_anchors = sampling_payload.get("prompt_anchors") if sampling_payload else None
+    origins_known = (
+        isinstance(prompt_anchors, list)
+        and bool(prompt_anchors)
+        and all(
+            isinstance(anchor, dict) and type(anchor.get("start_1_based")) is int and anchor["start_1_based"] > 0
+            for anchor in prompt_anchors
+        )
+    )
+    mixed_circular_origins = origins_known and len({anchor["start_1_based"] for anchor in prompt_anchors}) > 1
+    comparable_origins = origins_known and not mixed_circular_origins
 
     score_rows = _load_likelihoods(likelihood_csv, raw_ids)
     score_by_id = {str(row["record_id"]): row for row in score_rows}
@@ -706,7 +715,7 @@ def finalize_rollout_report(
     rho, p_value = _spearman(lengths, scores)
     informative_scores = len(set(scores)) > 1
     strong_length_association = rho is not None and abs(rho) >= 0.5
-    apply_likelihood_order = informative_scores and not strong_length_association and not mixed_circular_origins
+    apply_likelihood_order = informative_scores and not strong_length_association and comparable_origins
     if apply_likelihood_order:
         accepted_ids = [
             str(row["record_id"]) for row in score_rows if str(row["record_id"]) in set(cluster_representatives)
@@ -810,7 +819,7 @@ def finalize_rollout_report(
             "score": "mean_log_probability_per_nucleotide",
             "conditioning_prefix": "+~",
             "applied_to_accepted_candidate_order": apply_likelihood_order,
-            "comparable_across_circular_prompt_origins": not mixed_circular_origins,
+            "comparable_across_circular_prompt_origins": comparable_origins,
             "residual_length_association": {
                 "method": "Spearman correlation across all raw generated designs",
                 "n": len(raw_ids),
@@ -820,7 +829,9 @@ def finalize_rollout_report(
                 "strong_correlation": strong_length_association,
             },
             "interpretation": (
-                "Recorded but not used for cross-origin ordering because whole-sequence SFT likelihood depends on "
+                "Recorded but not used for ordering because prompt-anchor provenance is unavailable or invalid."
+                if not origins_known
+                else "Recorded but not used for cross-origin ordering because whole-sequence SFT likelihood depends on "
                 "the linearized circular origin."
                 if mixed_circular_origins
                 else "Within-protocol prioritization only; not a bootability probability or threshold."
@@ -838,7 +849,11 @@ def finalize_rollout_report(
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
-    if mixed_circular_origins:
+    if not origins_known:
+        likelihood_summary = (
+            "Likelihood was recorded but not used for ordering without valid prompt-anchor provenance."
+        )
+    elif mixed_circular_origins:
         likelihood_summary = "Likelihood was recorded but not used to order mixed-origin circular designs."
     elif apply_likelihood_order:
         likelihood_summary = "Likelihood was used for within-protocol ordering after the length check."

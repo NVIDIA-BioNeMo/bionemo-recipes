@@ -33,6 +33,10 @@ Final-design reports use schema 3, `counts.exact_sequence_representatives`, and
 `counts.post_qc_99pct_clusters`. Read coverage
 from the embedded clustering evidence: current runs use 95%, while historical runs
 may use different coverage at the same 99% identity.
+Likelihood ordering requires valid, nonempty `sampling_selection.prompt_anchors`
+establishing one origin. Missing, empty or malformed provenance keeps generation
+order and sets `ranking.comparable_across_circular_prompt_origins` to false;
+candidate names alone do not establish comparable conditioning.
 
 - Apply biological gates as a cheap-to-expensive waterfall, qualify safety PASS, then apply diversification. For the PhiX profile, required functions and hard synteny precede safety; optional filter-7 architecture removal follows safety, with AAI last and clustering afterward. The architecture keep gate remains upstream QC. Retain each stage's input, PASS, FAIL, INDETERMINATE, survivor counts, and per-candidate reasons; a final conjunction alone is not diagnostic.
 - Use intrinsic properties for per-candidate PASS gates. Express rollout-relative diversity as a diagnostic or explicit set-level portfolio rule, not an intrinsic genome property; use saturated model maxima or narrow bands as gates only when controls validate a separating boundary.

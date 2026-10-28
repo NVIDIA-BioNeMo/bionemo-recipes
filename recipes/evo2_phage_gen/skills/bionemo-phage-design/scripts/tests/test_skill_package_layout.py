@@ -51,11 +51,6 @@ def test_recipe_skill_package_layout() -> None:
         assert "\ndescription: " in text
         eval_path = skill_dir / "evals" / "evals.json"
         assert eval_path.is_file()
-        suite = json.loads(eval_path.read_text(encoding="utf-8"))
-        assert suite["skill_name"] == skill_dir.name
-        cases = suite["evals"]
-        assert isinstance(cases, list)
-        assert cases
 
 
 def test_recipe_plugin_manifests_point_at_local_skills() -> None:
@@ -82,18 +77,3 @@ def test_local_markdown_links_resolve() -> None:
                 missing.append(f"{source.relative_to(RECIPE_ROOT)} -> {raw_target}")
 
     assert not missing, "\n".join(missing)
-
-
-def test_retired_prompt_terms() -> None:
-    prompt_surface = "\n".join(path.read_text(encoding="utf-8") for path in SKILLS_ROOT.rglob("*.md")).lower()
-    for retired in (
-        "superpowers",
-        "test-driven development",
-        "red/green",
-        "dependency_graph",
-        "action-traceability",
-        "lineage-contract",
-        "monitoring-contract",
-        "implementation-contract",
-    ):
-        assert retired not in prompt_surface

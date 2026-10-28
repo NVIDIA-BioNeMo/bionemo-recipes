@@ -280,6 +280,33 @@ def test_monitored_timeout(tmp_path: Path) -> None:
     assert completed.returncode == 124
 
 
+def test_asset_timeout_exemption(tmp_path: Path) -> None:
+    """Large asset downloads are unbounded; later quick-mode work remains bounded."""
+    result = tmp_path / "quick"
+    completed = subprocess.run(
+        ["bash", str(SCRIPT), "--quick-e2e", "--dry-run", "--result-root", str(result)],
+        cwd=RECIPE_ROOT,
+        env={**os.environ, "STAGE_TIMEOUT_SECONDS": "17"},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    commands = [
+        shlex.split(line.partition("command: ")[2])
+        for line in (result / "RUNLOG.md").read_text().splitlines()
+        if "command: " in line
+    ]
+    assets = next(c for c in commands if "evo2_phage_prepare_external_assets" in c)
+    assert assets[0] == "evo2_phage_prepare_external_assets"
+    training = _gdpo_commands(commands)
+    assert training
+    for command in commands:
+        if "evo2_phage_run_gdpo" in command:
+            assert command[:3] == ["timeout", "--kill-after=60s", "17s"]
+
+
 def test_dry_run(tmp_path: Path) -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, timeout=10)
     assert "export NCCL_GRAPH_REGISTER=0" in SCRIPT.read_text()

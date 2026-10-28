@@ -444,6 +444,78 @@ def test_arc_summary_keeps_legacy_reports(tmp_path, contract):
     assert json.loads(output.read_text())["final_filter_contract"] == summary
 
 
+@pytest.mark.parametrize(
+    "selection, comparable",
+    [
+        (None, False),
+        ({}, False),
+        ({"prompt_anchors": []}, False),
+        ({"prompt_anchors": None}, False),
+        ({"prompt_anchors": "origin"}, False),
+        ({"prompt_anchors": [{}]}, False),
+        ({"prompt_anchors": [{"start_1_based": True}]}, False),
+        ({"prompt_anchors": [{"name": "origin", "start_1_based": 1}]}, True),
+        ({"prompt_anchors": [{"start_1_based": 1}, {"start_1_based": 900}]}, False),
+    ],
+)
+def test_likelihood_origin_provenance(tmp_path, selection, comparable):
+    """Missing or malformed origins cannot silently enable cross-origin ranking."""
+    raw = tmp_path / "raw.fasta"
+    raw.write_text(">left-0000\nAACG\n>right-0000\nTTGC\n")
+    mapping = tmp_path / "mapping.csv"
+    mapping.write_text(
+        "raw_index,record_id,representative_id,is_representative,duplicate_reason,length_nt\n"
+        "0,left-0000,left-0000,true,,4\n1,right-0000,right-0000,true,,4\n"
+    )
+    safety = tmp_path / "safety.json"
+    safety.write_text(
+        json.dumps(
+            {
+                "records": [
+                    {"record_id": "left-0000", "state": "PASS"},
+                    {"record_id": "right-0000", "state": "PASS"},
+                ]
+            }
+        )
+    )
+    scores = tmp_path / "scores.csv"
+    scores.write_text(
+        "likelihood_rank,record_id,length_nt,scored_nucleotides,total_log_probability,"
+        "mean_log_probability_per_nucleotide\n"
+        "1,right-0000,4,4,-0.4,-0.1\n2,left-0000,4,4,-1.2,-0.3\n"
+    )
+    memberships = tmp_path / "memberships.csv"
+    memberships.write_text("representative_id,member_id\nleft-0000,left-0000\nright-0000,right-0000\n")
+    sampling = None
+    if selection is not None:
+        sampling = tmp_path / "sampling.yaml"
+        sampling.write_text(json.dumps(selection))
+    report, accepted, summary = (tmp_path / name for name in ("report.json", "accepted.fasta", "SUMMARY.md"))
+    finalize_rollout_report(
+        raw,
+        mapping,
+        safety,
+        raw,
+        raw,
+        scores,
+        raw,
+        memberships,
+        report,
+        accepted,
+        summary,
+        model_checkpoint="sft",
+        rl_checkpoint="rl",
+        sampling_selection=sampling,
+    )
+    ranking = json.loads(report.read_text())["ranking"]
+    assert ranking["applied_to_accepted_candidate_order"] is comparable
+    assert ranking["comparable_across_circular_prompt_origins"] is comparable
+    expected = ">right-0000\nTTGC\n>left-0000\nAACG\n" if comparable else raw.read_text()
+    assert accepted.read_text() == expected
+    if not comparable:
+        assert "not used" in summary.read_text()
+
+
 def test_final_report_reconciles_raw_and_representative_denominators(tmp_path):
     raw = tmp_path / "raw.fasta"
     raw.write_text(">a\nAACG\n>a-copy\nAACG\n>b\nGG~T\n>c\nTTGC\n")

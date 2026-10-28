@@ -113,14 +113,23 @@ def test_external_qc_checker_requires_enabled_stage_inputs(tmp_path, monkeypatch
     assert "orfipy" in missing_required
 
 
-def test_qc_requires_member_db_for_aai(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "database",
+    [
+        {},
+        {"mmseqs_db_aai_database": ""},
+        {"mmseqs_db_aai_database": None},
+        {"mmseqs_db_aai_database": "missing-members"},
+    ],
+)
+def test_qc_requires_member_db_for_aai(tmp_path, monkeypatch, database):
     monkeypatch.setattr("shutil.which", lambda *_args, **_kwargs: None)
     checks = check_arc_qc_prerequisites(
         _write_config(
             tmp_path,
             genetic_architecture_visualization_and_synteny_filtering=True,
             average_protein_sequence_identity_filter=True,
-            mmseqs_db_aai_database=str(tmp_path / "members"),
+            **database,
         ),
         genetic_architecture_import_fasta=_write_import_fasta(tmp_path),
     )

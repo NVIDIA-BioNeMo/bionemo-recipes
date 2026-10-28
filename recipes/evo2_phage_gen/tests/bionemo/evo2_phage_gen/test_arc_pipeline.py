@@ -349,6 +349,35 @@ def test_coordinate_parity_detects_half_fix(tmp_path, strand):
         )
 
 
+@pytest.mark.parametrize("orf_hits", [False, True])
+@pytest.mark.parametrize("with_hits", [False, True])
+def test_pident_metrics_exact_ids(tmp_path, orf_hits, with_hits):
+    """Execute the maintained patch's added metrics function, without external assets."""
+    added = (
+        arc_pipeline.DEFAULT_ARC_PIPELINE_PATCH.read_text()
+        .split("+def save_mmseqs_pident_metrics(", 1)[1]
+        .split("\n\n", 1)[0]
+    )
+    source = "def save_mmseqs_pident_metrics(" + "\n".join(line.removeprefix("+") for line in added.splitlines())
+    namespace = {"pd": pd}
+    exec(compile(source, str(arc_pipeline.DEFAULT_ARC_PIPELINE_PATCH), "exec"), namespace)
+    column = "tropism_protein_mmseqs_percent_identity"
+    ids = ["umi1", "umi1", "umi10", "umi10", "absent"]
+    if orf_hits:
+        ids = [f"{name}_ORF.{i}" for i, name in enumerate(ids)]
+    hits = pd.DataFrame({"id_prompt": ids, column: [60.0, 90.0, 72.0, 80.0, 99.0]})
+    if not with_hits:
+        hits = hits.iloc[:0]
+    sequences = pd.DataFrame({"id_prompt": ["umi10 description", "umi1 other", "umi100 umi1"]})
+    before = hits.copy(deep=True)
+    output = tmp_path / "metrics.csv"
+    namespace["save_mmseqs_pident_metrics"](hits, "tropism_protein", sequences, str(output))
+    metrics = pd.read_csv(output)
+    assert metrics["id_prompt"].tolist() == ["umi10 description", "umi1 other", "umi100 umi1"]
+    assert metrics[column].tolist() == ([80.0, 90.0, 0.0] if with_hits else [0.0, 0.0, 0.0])
+    pd.testing.assert_frame_equal(hits, before)
+
+
 def _load_prepared_arc_pipeline(tmp_path: Path, module_name: str, monkeypatch):
     """Prepare Arc into tmp_path and import the patched pipeline module from there."""
     if not DEFAULT_ARC_PIPELINE_SOURCE_DIR.exists() or not DEFAULT_PHIX174_FASTA.exists():
