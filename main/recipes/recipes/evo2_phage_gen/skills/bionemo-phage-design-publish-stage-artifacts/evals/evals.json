@@ -1,0 +1,43 @@
+{
+  "skill_name": "bionemo-phage-design-publish-stage-artifacts",
+  "evals": [
+    {
+      "id": "bionemo-phage-design-publish-stage-artifacts-001-selective-publication",
+      "prompt": "Prepare a collaborator-bucket backup plan, with no actual transfers. User authorized selected model use and scientific results, not exact SFT-training resume. Inventory: rl/sft-checkpoint=28GB with succeeded schema-2 manifest/model_object_state_preserved=true; sft/raw=85GB optimizer/full-state; selected RL checkpoint=50GB required for an explicitly requested RL resume; other checkpoints=400GB; final FASTA/scores/cluster map/report=40MB; logs/run.log contains one signed URL; public databases=2TB; temporary cache=90GB. Destination is an existing private collaborator prefix; access/license approval covers the selected model/results. Give the inclusion/exclusion and verification plan, and how a failed transfer affects stage status.",
+      "expected_output": "A selective publication inventory respecting distinct model-use and resume needs.",
+      "assertions": [
+        "Includes prepared 28GB SFT payload/manifest, the explicitly requested selected 50GB full-state RL resume checkpoint and scientific result/settings evidence; does not conflate RL resume with raw SFT resume.",
+        "Excludes 85GB raw SFT state, redundant 400GB checkpoints, public databases and caches; preserves useful logs only after removing/redacting the signed URL.",
+        "Uses the supplied private-prefix authorization without inventing a public-access change or asking for credentials; proposes resumable transfer and destination manifest/payload/read-access verification.",
+        "Separates publication failure/retry/omissions from completed scientific-stage validity and drafts a RUNLOG inventory/result record without claiming upload or file edits occurred."
+      ],
+      "expected_skill": "bionemo-phage-design-publish-stage-artifacts",
+      "expected_script": null
+    },
+    {
+      "id": "bionemo-phage-design-publish-stage-artifacts-002-not-requested",
+      "prompt": "The local generation/screening stage is complete. /results/run/final/report.json records 64 raw observations, seven safety-PASS hard-QC genomes and five clusters; /results/run/final/selected.fasta contains the five representatives and /results/run/rl/selected-checkpoint.json names the model. A status inventory also shows a configured GCS remote, mounted team NFS and 2TB free space. The user asks only: 'Summarize local outputs and whether another scientific stage is needed.' Give the response and next action without changing files or external systems.",
+      "expected_output": "A scoped local handoff without converting available storage into an upload task.",
+      "assertions": [
+        "Reports 64 raw observations, seven passing genomes and five cluster representatives with the supplied local report/FASTA/checkpoint pointers; no further scripted scientific stage is established by this completed inventory, while wet-lab non-claims remain.",
+        "Does not upload, sync, install transfer clients, solicit credentials or broaden access merely because GCS/NFS are available.",
+        "If publication is mentioned, makes it optional and inactive absent a user request; does not turn the answer into an unnecessary approval or destination questionnaire."
+      ],
+      "expected_skill": "bionemo-phage-design-publish-stage-artifacts",
+      "expected_script": null
+    },
+    {
+      "id": "bionemo-phage-design-publish-stage-artifacts-003-s3-rl-input",
+      "prompt": "The user requests an S3 collaboration copy of the SFT model consumed by RL; no exact SFT resume is requested. Inventory: /results/run/sft/raw/iter_0005200 is 85GB full-state; /results/run/rl/sft-checkpoint has a 28GB iter_0005200 and preparation-manifest.json with schema_version=1, model_object_state_preserved=false. A different /results/run-old/rl/sft-checkpoint has schema 2 and a different source fingerprint. aws is available; destination s3://collab/phage/run-20261023/ is authorized and empty. Return a concrete transfer/preparation plan with commands as text and verification conditions only. Do not execute or write anything.",
+      "expected_output": "A source-correct, schema-aware S3 plan that does not publish either invalid or unrelated payload.",
+      "assertions": [
+        "Does not upload schema-1 run payload or substitute run-old's schema-2 checkpoint with a different source fingerprint; plans preparation/validation from the intended selected source first.",
+        "Requires succeeded schema 2 and model_object_state_preserved=true and validates the recorded direct iter_* payload before transfer.",
+        "Shows aws s3 sync with /results/run/rl/sft-checkpoint as source and the authorized run-20261023 destination, excluding raw 85GB optimizer/full-state SFT backup.",
+        "Verifies remote manifest, matching expected payload objects/access and records intended contents/exclusions/transfer outcome; commands remain proposed and no preparation or upload success is claimed."
+      ],
+      "expected_skill": "bionemo-phage-design-publish-stage-artifacts",
+      "expected_script": null
+    }
+  ]
+}
