@@ -20,9 +20,13 @@
 
 import csv
 import json
+from itertools import product
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from bionemo.evo2_phage_gen import rollout_evidence
 from bionemo.evo2_phage_gen.rollout_evidence import (
     cluster_post_qc_fasta,
     deduplicate_fasta,
@@ -210,6 +214,201 @@ def test_post_qc_clustering_pins_contract(tmp_path):
     cluster_command = next(command for command in report["commands"] if command[1] == "cluster")
     assert cluster_command[cluster_command.index("--min-seq-id") + 1] == "0.99"
     assert cluster_command[cluster_command.index("-c") + 1] == "0.95"
+
+
+@pytest.mark.parametrize("rotations,reverse_complements", list(product((False, True), repeat=2)))
+def test_circular_keys_match_exhaustive_oracle(rotations, reverse_complements):
+    """A missed rotation/RC or a spurious merge changes exact biological identity."""
+    for length in range(1, 7):
+        for bases in product("ACGT", repeat=length):
+            sequence = "".join(bases)
+            reverse = sequence.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+            expected = min(
+                strand[offset:] + strand[:offset]
+                for strand in ((sequence, reverse) if reverse_complements else (sequence,))
+                for offset in (range(length) if rotations else (0,))
+            )
+            assert (
+                rollout_evidence.sequence_deduplication_key(
+                    sequence,
+                    deduplicate_rotations=rotations,
+                    deduplicate_reverse_complements=reverse_complements,
+                )
+                == expected
+            )
+
+
+@pytest.mark.parametrize(
+    "rotations,reverse_complements,expected",
+    [
+        (True, True, ["a", "a", "a", "a"]),
+        (False, True, ["a", "b", "a", "b"]),
+        (True, False, ["a", "a", "c", "c"]),
+        (False, False, ["a", "b", "c", "d"]),
+    ],
+)
+def test_post_qc_dedup_options(tmp_path, monkeypatch, rotations, reverse_complements, expected):
+    candidates = tmp_path / "input.fasta"
+    candidates.write_text(">a\nAACG\n>b\nACGA\n>c\nCGTT\n>d\nTCGT\n")
+
+    def mmseqs(command, **kwargs):
+        if command[1] == "createtsv":
+            Path(command[-1]).write_text("a\ta\nb\tb\nc\tc\nd\td\n")
+        return SimpleNamespace(stdout="fixture-mmseqs\n")
+
+    monkeypatch.setattr(rollout_evidence.subprocess, "run", mmseqs)
+    cluster_post_qc_fasta(
+        candidates,
+        tmp_path / "reps.fasta",
+        tmp_path / "members.csv",
+        tmp_path / "report.json",
+        work_dir=tmp_path / "work",
+        deduplicate_rotations=rotations,
+        deduplicate_reverse_complements=reverse_complements,
+    )
+    with (tmp_path / "members.csv").open() as handle:
+        by_member = {row["member_id"]: row["representative_id"] for row in csv.DictReader(handle)}
+    assert [by_member[name] for name in "abcd"] == expected
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["circular_deduplication"]["deduplicate_rotations"] is rotations
+    assert report["circular_deduplication"]["deduplicate_reverse_complements"] is reverse_complements
+
+
+def test_post_qc_merges_circular_members(tmp_path, monkeypatch):
+    """Equivalent non-representative members must also join their whole clusters."""
+    candidates = tmp_path / "hard-qc.fasta"
+    original = (
+        ">first\nCGAA\n>near\nAACT\n>rotation\nACGA\n>rc\nCGTT\n"
+        ">rc-rotation\nGTTC\n>bridge\nACTA\n>other\nGGTT\n>repeated\nAACGAACG\n"
+    )
+    candidates.write_text(original)
+    raw_memberships = (
+        "first\tfirst\nfirst\tnear\nrotation\trotation\nrc\trc\n"
+        "rc-rotation\trc-rotation\nbridge\tbridge\nother\tother\nrepeated\trepeated\n"
+    )
+
+    def mmseqs(command, **kwargs):
+        if command[1] == "createdb":
+            assert candidates.read_text() == original
+        elif command[1] == "createtsv":
+            Path(command[-1]).write_text(raw_memberships)
+        return SimpleNamespace(stdout="fixture-mmseqs\n")
+
+    monkeypatch.setattr(rollout_evidence.subprocess, "run", mmseqs)
+    cluster_post_qc_fasta(
+        candidates,
+        tmp_path / "representatives.fasta",
+        tmp_path / "memberships.csv",
+        tmp_path / "report.json",
+        work_dir=tmp_path / "work",
+    )
+    assert (tmp_path / "representatives.fasta").read_text() == (">first\nCGAA\n>other\nGGTT\n>repeated\nAACGAACG\n")
+    with (tmp_path / "memberships.csv").open() as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["representative_id"] for row in rows] == ["first"] * 6 + ["other", "repeated"]
+    assert [row["member_id"] for row in rows] == [
+        "first",
+        "near",
+        "rotation",
+        "rc",
+        "rc-rotation",
+        "bridge",
+        "other",
+        "repeated",
+    ]
+    assert (tmp_path / "work/clusters.tsv").read_text() == raw_memberships
+    assert candidates.read_text() == original
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["counts"] == {"hard_qc_passers": 8, "clusters": 3, "duplicates_removed": 5}
+    assert report["circular_deduplication"]["mmseqs_clusters_before"] == 7
+    assert report["circular_deduplication"]["clusters_merged"] == 4
+
+
+@pytest.mark.parametrize("contents", ["", ">only\nACGT\n"])
+def test_post_qc_circular_empty_singleton(tmp_path, monkeypatch, contents):
+    candidates = tmp_path / "input.fasta"
+    candidates.write_text(contents)
+
+    def mmseqs(command, **kwargs):
+        if command[1] == "createtsv":
+            Path(command[-1]).write_text("only\tonly\n")
+        return SimpleNamespace(stdout="fixture-mmseqs\n")
+
+    monkeypatch.setattr(rollout_evidence.subprocess, "run", mmseqs)
+    cluster_post_qc_fasta(
+        candidates,
+        tmp_path / "reps.fasta",
+        tmp_path / "members.csv",
+        tmp_path / "report.json",
+        work_dir=tmp_path / "work",
+    )
+    assert (tmp_path / "reps.fasta").read_text() == contents
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["counts"]["clusters"] == bool(contents)
+    assert report["circular_deduplication"]["clusters_merged"] == 0
+
+
+@pytest.mark.parametrize(
+    "rotation_setting,override",
+    [(None, None), (True, None), (False, None), ("false", None), (False, True), (True, False)],
+)
+def test_report_checks_rotation_setting(tmp_path, rotation_setting, override):
+    """A stale cluster marker cannot produce an order list with circular duplicates."""
+    raw = tmp_path / "raw.fasta"
+    raw.write_text(">a\nAACG\n>b\nACGA\n")
+    mapping = tmp_path / "mapping.csv"
+    mapping.write_text("record_id,representative_id,is_representative\na,a,true\nb,b,true\n")
+    safety = tmp_path / "safety.json"
+    safety.write_text(json.dumps({"records": [{"record_id": name, "state": "PASS"} for name in ("a", "b")]}))
+    scores = tmp_path / "scores.csv"
+    scores.write_text(
+        "record_id,scored_nucleotides,total_log_probability,mean_log_probability_per_nucleotide\n"
+        "a,4,-4,-1\nb,4,-4,-1\n"
+    )
+    memberships = tmp_path / "memberships.csv"
+    memberships.write_text("representative_id,member_id\na,a\nb,b\n")
+    accepted = tmp_path / "accepted.fasta"
+    clustering_report = None
+    if rotation_setting is not None:
+        clustering_report = tmp_path / "clustering.json"
+        clustering_report.write_text(
+            json.dumps(
+                {
+                    "state": "succeeded",
+                    "circular_deduplication": {
+                        "deduplicate_rotations": rotation_setting,
+                        "deduplicate_reverse_complements": True,
+                    },
+                }
+            )
+        )
+
+    def finalize():
+        finalize_rollout_report(
+            raw,
+            mapping,
+            safety,
+            raw,
+            raw,
+            scores,
+            raw,
+            memberships,
+            tmp_path / "report.json",
+            accepted,
+            tmp_path / "SUMMARY.md",
+            model_checkpoint="sft",
+            rl_checkpoint="rl",
+            clustering_report=clustering_report,
+            deduplicate_rotations=override,
+        )
+
+    if rotation_setting is False and override is None:
+        finalize()
+        assert accepted.read_text() == raw.read_text()
+    else:
+        with pytest.raises(ValueError, match=r"equivalen|boolean|disagrees"):
+            finalize()
+        assert not accepted.exists()
 
 
 @pytest.mark.parametrize(

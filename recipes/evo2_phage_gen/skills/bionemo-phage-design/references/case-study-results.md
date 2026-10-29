@@ -28,6 +28,12 @@ Retained local artifacts are under
 The historical `b32` directory name does not describe the actual generation batch (64).
 These run artifacts are not bundled with the recipe:
 
+The 2026-10-28 final-deduplication audit checked all 355 passers with both exact circular
+rotations and reverse complements enabled. All 62,835 pairs were distinct, confirmed by an
+independent equal-length/doubled-string check. The 16 representative IDs, sequences, and
+historical artifact hashes below are unchanged. This audit does not revalidate the earlier
+cosine-pool or step-400 clustering: their sequence artifacts were unavailable on the audit host.
+
 | Artifact                             | SHA-256                                                            |
 | ------------------------------------ | ------------------------------------------------------------------ |
 | `final-designs.json`                 | `43d5496f64c97821c9181400c57d6608877c9350e4ac4ab5798cbf0bcf2861e0` |

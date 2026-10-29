@@ -2,6 +2,20 @@
   "skill_name": "bionemo-phage-design-generate-and-screen",
   "evals": [
     {
+      "id": "bionemo-phage-design-generate-and-screen-final-equivalence",
+      "prompt": "Review a toy final-selection fixture, not biological candidates. QC-PASS records in generation order are a=AACG, b=ACGA, c=CGTT, d=TCGT, e=GGTT. Mocked MMseqs output leaves all five as singleton clusters. An earlier record f=GAAC failed safety. Derive the representatives for a circular + RC protocol and for a linear RC-only protocol, preserving original IDs/sequences. Give the maintained CLI or example settings for each, and explain whether disabling RC forces MMseqs itself to keep opposite strands separate. The old result root has completed stage markers and no saved deduplication options; the owner proposes changing an environment variable and reusing its order list. Give a safe final-selection handoff without new generation, scientific screening, writes, or jobs.",
+      "expected_output": "Correct equivalence classes, independently configured options, and an evidence-preserving final-selection handoff.",
+      "assertions": [
+        "Derives circular+RC representatives a=AACG and e=GGTT; derives RC-only representatives a=AACG, b=ACGA, e=GGTT without rotating or reverse-complementing their exported strings.",
+        "Keeps failed f out of final set selection and does not transfer its failure or any passing QC evidence across equivalent starts/strands.",
+        "Uses both options enabled for circular DNA and disables only deduplicate-rotations or FINAL_DEDUP_ROTATIONS for RC-only; RC is independently disableable.",
+        "Distinguishes the extra exact-equivalence merge from MMseqs similarity matching, which may already group opposite strands even with the extra RC merge disabled.",
+        "Does not treat completed markers or missing option provenance as proof the changed selection ran; proposes versioned final-selection outputs from saved hard-QC sequences/memberships, records settings and reconciles counts before an order list is used."
+      ],
+      "expected_skill": "bionemo-phage-design-generate-and-screen",
+      "expected_script": null
+    },
+    {
       "id": "bionemo-phage-design-generate-and-screen-001-order-target",
       "prompt": "The lab wants 100 orderable complete-genome designs from a selected RL checkpoint. A compatible pilot attempted 400: 390 completed, 350 exact-sequence representatives, 110 safety-PASS, 60 hard-QC passers and 32 post-QC clusters. The estimated clustered yield interval is .057-.111 per attempted generation. The first 100 attempts found 14 clusters; the last 100 found one new cluster. Give a generation/selection recommendation with calculations and uncertainty. Return a plan only; do not launch generation or ordering.",
       "expected_output": "A pilot-grounded sizing decision that accounts for losses and saturation.",

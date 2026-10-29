@@ -25,7 +25,7 @@ Process candidates in this order:
 4. run every required external and internal QC component with its configured positive controls on the representatives;
 5. treat missing required evidence or tool failure as INDETERMINATE rather than PASS;
 6. apply the approved biological hard-filter profile, intersect exact safety PASS, then apply diversification exclusions with AAI last;
-7. cluster only the safety-PASS hard-QC set in its supplied sequence order at the approved identity and coverage thresholds for diversity reporting; and
+7. cluster only the safety-PASS hard-QC set in its supplied sequence order, then merge exact full-length equivalents under the approved rotation/RC settings; and
 8. rank cluster representatives only when the objective plan defines a defensible ranking.
 
 Short genomes, no predicted genes/ORFs, missing measured genes, and header-only or empty tool results must follow their explicit scientific behavior rather than crash the rollout. Confirm that each enabled filter executed and report any unavailable component; never silently skip a gate.
@@ -40,7 +40,16 @@ FAIL/INDETERMINATE candidates cannot enter diversification. Gene/synteny evidenc
 must remain available for biologically complete candidates rejected only for novelty.
 Disable Arc's internal clustering for this final rollout. Run the final MMseqs clustering
 after safety and target hard QC with 99% identity, 95% coverage of both genomes, coverage mode 0, and cluster mode
-0, and retain the complete candidate-to-cluster membership table.
+0, and retain the complete candidate-to-cluster membership table. Final exact-equivalence
+merging defaults to rotations **and** reverse complements for PhiX174. For a linear rollout
+requiring RC-only equivalence, use `cluster-post-qc --no-deduplicate-rotations --deduplicate-reverse-complements` with its normal input/output arguments; the example's
+equivalent settings are `FINAL_DEDUP_ROTATIONS=0 FINAL_DEDUP_REVERSE_COMPLEMENTS=1`.
+Either comparison can be disabled independently. Merge clusters linked by **any** passing
+member, retaining the earliest existing MMseqs representative and its original sequence.
+Do not transfer QC across rotations/strands or let a failed candidate represent a passing one.
+These controls do not disable MMseqs similarity matches. Check the recorded settings and
+additional merges; final reporting must agree with the clustering report. See
+[rollout guidance](references/rollout-guidance.md) before reusing completed stage markers.
 
 As the final rollout/report step, score every generated design with that validated model-only SFT checkpoint and its intended conditioning prefix; retain the full-state source for exact SFT-training resume. Attach total and mean per-nucleotide log probability to each design and report residual correlation between that score and sequence length. Use the mean score for ordering only when length and prompt serialization are comparable. The maintained report requires nonempty, valid `prompt_anchors` provenance establishing one circular origin; unavailable provenance preserves generation order and marks scores non-comparable. Whole-sequence likelihood is origin-dependent for circular genomes, so retain it as a diagnostic rather than globally ranking a mixed-origin rollout unless an origin-normalized method was validated. [Black et al.](https://doi.org/10.64898/2026.06.12.731871) found that Evo 2 likelihood enriched for experimentally bootable PhiX174 designs, supporting within-protocol ranking—not a transferable cutoff or proof of viability.
 

@@ -42,6 +42,11 @@ passes**, with no overlap. Clustering at 99% nucleotide identity / 95% reciproca
 leaves one 340-member cluster and 15 singletons; score summaries weight the 16 representatives
 equally. The separate filter-7 diagnostic passes 27 designs and is not the headline gate.
 
+A rotation/reverse-complement audit of all 355 passers found no equivalent pairs:
+the **16 representatives and 3.55% pass rate are unchanged**. Current final selection
+adds exact rotation/RC merging after MMseqs; both are enabled for PhiX174 and independently
+[configurable](examples/README.md#script-workflow-and-outputs). Initial exact-only deduplication and QC are unchanged.
+
 Final yield is similar to the earlier cosine pool; these different checkpoint/cohort evaluations
 are not a controlled comparison or evidence that the same clusters recur. Computational
 acceptance does not establish experimental viability.

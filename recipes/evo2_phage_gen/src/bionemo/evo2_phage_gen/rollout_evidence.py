@@ -429,6 +429,99 @@ def select_hard_qc_passers(
     return output_fasta
 
 
+def sequence_deduplication_key(
+    sequence: str, *, deduplicate_rotations: bool = True, deduplicate_reverse_complements: bool = True
+) -> str:
+    """Compare full-length DNA with optional rotation/strand equivalence; never rewrite output."""
+    if type(deduplicate_rotations) is not bool or type(deduplicate_reverse_complements) is not bool:
+        raise ValueError("deduplication settings must be boolean")
+    sequence = sequence.upper()
+    if not sequence or set(sequence) - _UNAMBIGUOUS_DNA:
+        raise ValueError("sequence equivalence requires nonempty unambiguous DNA")
+
+    def least_rotation(value: str) -> str:
+        # Linear-time minimal rotation; retain length, including tandem repeats.
+        doubled = value + value
+        left, right, offset = 0, 1, 0
+        length = len(value)
+        while left < length and right < length and offset < length:
+            a, b = doubled[left + offset], doubled[right + offset]
+            if a == b:
+                offset += 1
+                continue
+            if a > b:
+                left += offset + 1
+                if left == right:
+                    left += 1
+            else:
+                right += offset + 1
+                if left == right:
+                    right += 1
+            offset = 0
+        start = min(left, right)
+        return doubled[start : start + length]
+
+    forward = least_rotation(sequence) if deduplicate_rotations else sequence
+    if not deduplicate_reverse_complements:
+        return forward
+    reverse = sequence.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+    return min(forward, least_rotation(reverse) if deduplicate_rotations else reverse)
+
+
+def _deduplication_options(rotations, reverse_complements, clustering_payload=None) -> dict[str, bool]:
+    """Inherit recorded options during finalization; explicit overrides must agree."""
+    recorded = (clustering_payload or {}).get("circular_deduplication", {})
+    if not isinstance(recorded, dict):
+        raise ValueError("circular_deduplication must be a mapping")
+    options = {}
+    for name, requested in (
+        ("deduplicate_rotations", rotations),
+        ("deduplicate_reverse_complements", reverse_complements),
+    ):
+        value = recorded.get(name, True) if requested is None else requested
+        if type(value) is not bool or (name in recorded and type(recorded[name]) is not bool):
+            raise ValueError(f"{name} must be boolean")
+        if name in recorded and value != recorded[name]:
+            raise ValueError(f"{name} disagrees with clustering report; rerun final clustering")
+        options[name] = value
+    return options
+
+
+def _merge_circular_memberships(
+    records: list[tuple[str, str]],
+    memberships: list[tuple[str, str]],
+    *,
+    deduplicate_rotations: bool = True,
+    deduplicate_reverse_complements: bool = True,
+) -> list[tuple[str, str]]:
+    """Union MMseqs clusters linked by the enabled exact equivalence of any member."""
+    source_order = {record_id: index for index, (record_id, _) in enumerate(records)}
+    cluster_by_member = {member: representative for representative, member in memberships}
+    parent = {representative: representative for representative, _ in memberships}
+
+    def root(value: str) -> str:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    first_cluster_by_key: dict[str, str] = {}
+    for record_id, sequence in records:
+        key = sequence_deduplication_key(
+            sequence,
+            deduplicate_rotations=deduplicate_rotations,
+            deduplicate_reverse_complements=deduplicate_reverse_complements,
+        )
+        cluster = cluster_by_member[record_id]
+        first = first_cluster_by_key.setdefault(key, cluster)
+        left, right = root(first), root(cluster)
+        if left != right:
+            # Keep an existing, independently QC-qualified MMseqs representative.
+            earlier, later = sorted((left, right), key=source_order.__getitem__)
+            parent[later] = earlier
+    return [(root(representative), member) for representative, member in memberships]
+
+
 def cluster_post_qc_fasta(
     input_fasta: Path,
     representative_fasta: Path,
@@ -438,8 +531,11 @@ def cluster_post_qc_fasta(
     work_dir: Path,
     mmseqs_bin: str | Path = "mmseqs",
     threads: int = 16,
+    deduplicate_rotations: bool = True,
+    deduplicate_reverse_complements: bool = True,
 ) -> Path:
-    """Cluster hard-QC passers at the pinned final-order MMseqs contract."""
+    """Cluster hard-QC passers, then optionally merge exact rotation/RC equivalents."""
+    options = _deduplication_options(deduplicate_rotations, deduplicate_reverse_complements)
     if threads < 1:
         raise ValueError("threads must be positive")
     records = read_fasta(input_fasta, allow_empty=True)
@@ -497,8 +593,12 @@ def cluster_post_qc_fasta(
     representative_ids = {representative_id for representative_id, _ in memberships}
     if not representative_ids <= set(identifiers):
         raise ValueError("MMseqs returned an unknown cluster representative")
-    if not representative_ids <= set(member_ids):
-        raise ValueError("MMseqs cluster representative is not a cluster member")
+    cluster_by_member = {member: representative for representative, member in memberships}
+    if any(cluster_by_member[representative] != representative for representative in representative_ids):
+        raise ValueError("MMseqs cluster representative must belong to its own cluster")
+    mmseqs_cluster_count = len(representative_ids)
+    memberships = _merge_circular_memberships(records, memberships, **options)
+    representative_ids = {representative_id for representative_id, _ in memberships}
     source_order = {record_id: index for index, record_id in enumerate(identifiers)}
     memberships.sort(key=lambda row: (source_order[row[0]], source_order[row[1]]))
     representative_records = [record for record in records if record[0] in representative_ids]
@@ -509,9 +609,9 @@ def cluster_post_qc_fasta(
         writer.writerow(("representative_id", "member_id"))
         writer.writerows(memberships)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "state": "succeeded",
-        "order": "all safety and target hard QC before nucleotide clustering",
+        "order": "all safety and target hard QC before MMseqs clustering and exact circular-equivalence merging",
         "counts": {
             "hard_qc_passers": len(records),
             "clusters": len(representative_records),
@@ -525,11 +625,21 @@ def cluster_post_qc_fasta(
             "cluster_mode": 0,
             "threads": threads,
         },
+        "circular_deduplication": {
+            **options,
+            "comparison": "exact full-length DNA under the enabled rotation/strand equivalences",
+            "scope": "all hard-QC members; union linked MMseqs clusters",
+            "limitation": "These switches control the extra exact-equivalence merge, not MMseqs similarity matching.",
+            "representative": "earliest existing MMseqs representative in input order; original sequence retained",
+            "mmseqs_clusters_before": mmseqs_cluster_count,
+            "clusters_merged": mmseqs_cluster_count - len(representative_records),
+        },
         "commands": commands,
         "artifacts": {
             "input_fasta": str(Path(input_fasta).resolve()),
             "representative_fasta": str(Path(representative_fasta).resolve()),
             "memberships_csv": str(Path(memberships_csv).resolve()),
+            "mmseqs_memberships_tsv": str(cluster_tsv.resolve()) if records else None,
         },
     }
     report_json.parent.mkdir(parents=True, exist_ok=True)
@@ -651,8 +761,12 @@ def finalize_rollout_report(
     clustering_report: Path | None = None,
     run_log: Path | None = None,
     safety_input_fasta: Path | None = None,
+    deduplicate_rotations: bool | None = None,
+    deduplicate_reverse_complements: bool | None = None,
 ) -> Path:
     """Reconcile raw, representative, hard-QC, clustering, and ranking evidence."""
+    clustering_payload = _load_optional_report(clustering_report)
+    options = _deduplication_options(deduplicate_rotations, deduplicate_reverse_complements, clustering_payload)
     raw_records = read_fasta(generated_fasta)
     raw_ids = [record_id for record_id, _ in raw_records]
     sequence_by_id = dict(raw_records)
@@ -688,6 +802,15 @@ def finalize_rollout_report(
     ]
     if set(cluster_representatives) != set(cluster_by_member.values()):
         raise ValueError("cluster representative FASTA and membership table disagree")
+    if any(cluster_by_member.get(record_id) != record_id for record_id in cluster_representatives):
+        raise ValueError("cluster representatives must belong to their own hard-QC cluster")
+    # Completed markers from an older clustering run must not permit duplicate orders.
+    if _merge_circular_memberships(
+        [(record_id, sequence_by_id[record_id]) for record_id in member_ids],
+        [(cluster_by_member[record_id], record_id) for record_id in member_ids],
+        **options,
+    ) != [(cluster_by_member[record_id], record_id) for record_id in member_ids]:
+        raise ValueError("unmerged circular-equivalent candidates: rerun final clustering before reporting")
 
     sampling_payload: dict[str, Any] | None = None
     if sampling_selection is not None:
@@ -783,7 +906,7 @@ def finalize_rollout_report(
         "hard_qc": _load_optional_report(hard_qc_report),
         "target_profile": _load_optional_report(target_report),
         "diagnostic_filter7": _load_optional_report(diagnostic_report),
-        "post_qc_clustering": _load_optional_report(clustering_report),
+        "post_qc_clustering": clustering_payload,
     }
     evidence = {name: value for name, value in evidence.items() if value is not None}
     counts = {
@@ -823,6 +946,7 @@ def finalize_rollout_report(
         },
         "counts": counts,
         "accepted_score_summary": accepted_score_summary,
+        "final_deduplication": options,
         "ranking": {
             "score": "mean_log_probability_per_nucleotide",
             "conditioning_prefix": "+~",

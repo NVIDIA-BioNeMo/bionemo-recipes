@@ -24,6 +24,7 @@ import sys
 import pytest
 import torch
 
+from bionemo.evo2_phage_gen import generation, rollout_evidence
 from bionemo.evo2_phage_gen.generation import (
     PromptAnchor,
     circular_prompt,
@@ -495,6 +496,81 @@ def test_final_rollout_reports_uninformative_constant_scores_without_nan(tmp_pat
     assert not diagnostic["strong_correlation"]
     assert not payload["ranking"]["applied_to_accepted_candidate_order"]
     assert (tmp_path / "report" / "accepted.fasta").read_text() == ">short\nA\n>long\nACG\n"
+
+
+@pytest.mark.parametrize("command", ["cluster-post-qc", "finalize-rollout", "enhanced-finalize"])
+@pytest.mark.parametrize("rotations,rc", [(True, True), (False, True), (True, False), (False, False)])
+def test_final_dedup_cli(monkeypatch, command, rotations, rc):
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured.update(kwargs)
+
+    if command == "cluster-post-qc":
+        monkeypatch.setattr(rollout_evidence, "cluster_post_qc_fasta", capture)
+        args = "cluster-post-qc --input-fasta input --output-fasta output --memberships-csv members --report report --work-dir work".split()
+    else:
+        args = "finalize-rollout --generated-fasta input --safety-manifest safety --target-fasta target --likelihood-csv scores --output-json output --accepted-fasta accepted --summary summary --model-checkpoint sft".split()
+        if command == "enhanced-finalize":
+            monkeypatch.setattr(rollout_evidence, "finalize_rollout_report", capture)
+            args += "--deduplication-mapping mapping --diagnostic-fasta diag --cluster-representatives-fasta reps --cluster-memberships members --rl-checkpoint rl".split()
+        else:
+            monkeypatch.setattr(generation, "finalize_ranked_rollout", capture)
+    args += [
+        "--deduplicate-rotations" if rotations else "--no-deduplicate-rotations",
+        "--deduplicate-reverse-complements" if rc else "--no-deduplicate-reverse-complements",
+    ]
+    monkeypatch.setattr(sys, "argv", ["evo2_phage_generation", *args])
+    generation.main()
+    assert captured["deduplicate_rotations"] is rotations
+    assert captured["deduplicate_reverse_complements"] is rc
+
+
+def test_ranked_rollout_circular_selection(tmp_path):
+    """Only eligible records may represent rotation/RC-equivalent order candidates."""
+    generated = tmp_path / "generated.fasta"
+    records = [
+        ("unsafe", "AACG"),
+        ("not-target", "ACGA"),
+        ("chosen", "CGTT"),
+        ("rotation", "GTTC"),
+        ("other", "GGTT"),
+        ("exact", "CGTT"),
+    ]
+    generated.write_text("".join(f">{name}\n{sequence}\n" for name, sequence in records))
+    safety = tmp_path / "safety.json"
+    safety.write_text(
+        json.dumps(
+            {"records": [{"record_id": name, "state": "FAIL" if name == "unsafe" else "PASS"} for name, _ in records]}
+        )
+    )
+    target = tmp_path / "target.fasta"
+    target.write_text(">t1\nCGTT\n>t2\nGTTC\n>t3\nGGTT\n")
+    scores = tmp_path / "scores.csv"
+    scores.write_text(
+        "record_id,scored_nucleotides,total_log_probability,mean_log_probability_per_nucleotide\n"
+        + "".join(f"{name},4,-4,-1\n" for name, _ in records)
+    )
+    report = tmp_path / "report.json"
+    accepted = tmp_path / "accepted.fasta"
+    finalize_ranked_rollout(
+        generated,
+        safety,
+        target,
+        scores,
+        report,
+        accepted,
+        tmp_path / "SUMMARY.md",
+        model_checkpoint="sft",
+    )
+    assert accepted.read_text() == ">chosen\nCGTT\n>other\nGGTT\n"
+    payload = json.loads(report.read_text())
+    assert payload["counts"]["accepted"] == 2
+    rows = {row["record_id"]: row for row in payload["records"]}
+    assert not rows["not-target"]["target_profile_pass"]
+    assert not rows["unsafe"]["accepted"]
+    assert rows["rotation"]["duplicate_of_higher_priority_candidate"] == "chosen"
+    assert rows["exact"]["duplicate_of_higher_priority_candidate"] == "chosen"
 
 
 def test_final_rollout_allows_zero_target_passes(tmp_path):

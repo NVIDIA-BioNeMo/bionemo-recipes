@@ -508,9 +508,15 @@ def finalize_ranked_rollout(
     summary_path: Path,
     *,
     model_checkpoint: str,
+    deduplicate_rotations: bool = True,
+    deduplicate_reverse_complements: bool = True,
 ) -> Path:
     """Join likelihood and QC evidence, then rank accepted candidates without making a viability claim."""
     from scipy.stats import spearmanr
+
+    from bionemo.evo2_phage_gen.rollout_evidence import _deduplication_options, sequence_deduplication_key
+
+    options = _deduplication_options(deduplicate_rotations, deduplicate_reverse_complements)
 
     generated = _fasta_records(generated_fasta)
     sequence_by_id = dict(generated)
@@ -549,13 +555,17 @@ def finalize_ranked_rollout(
     for score in candidate_order:
         record_id = score["record_id"]
         sequence = sequence_by_id[record_id]
-        duplicate_of = accepted_sequences.get(sequence)
+        # QC evidence is exact-sequence evidence, never transferable across starts/strands.
+        if safety_by_id.get(record_id) != "PASS" or sequence not in target_sequences:
+            continue
+        key = sequence_deduplication_key(sequence, **options)
+        duplicate_of = accepted_sequences.get(key)
         if duplicate_of is not None:
             duplicate_of_by_id[record_id] = duplicate_of
-        if safety_by_id.get(record_id) == "PASS" and sequence in target_sequences and duplicate_of is None:
+        if duplicate_of is None:
             accepted_ids.append(record_id)
             accepted_rank_by_id[record_id] = len(accepted_ids)
-            accepted_sequences[sequence] = record_id
+            accepted_sequences[key] = record_id
 
     report_rows = []
     for likelihood_rank, score in enumerate(score_rows, start=1):
@@ -594,6 +604,7 @@ def finalize_ranked_rollout(
         length_interpretation = "No strong residual length association detected at the stated threshold."
     report = {
         "schema_version": 1,
+        "final_deduplication": options,
         "ranking": {
             "model_checkpoint": model_checkpoint,
             "conditioning_prefix": DEFAULT_PROMPT_PREFIX,
@@ -815,6 +826,18 @@ def main() -> None:
     final_parser.add_argument("--clustering-report", type=Path)
     final_parser.add_argument("--run-log", type=Path)
 
+    for final_selection_parser in (clustering_parser, final_parser):
+        for equivalence in ("rotations", "reverse-complements"):
+            final_selection_parser.add_argument(
+                f"--deduplicate-{equivalence}",
+                action=argparse.BooleanOptionalAction,
+                default=True if final_selection_parser is clustering_parser else None,
+                help=(
+                    f"Merge exact full-length {equivalence} after QC (default: enabled; "
+                    "finalization inherits clustering report settings). Does not disable MMseqs similarity matches."
+                ),
+            )
+
     args = parser.parse_args()
     if args.command == "prepare-rl-prompts":
         for path in ensure_paper_useful_rl_prompt_files(args.data_dir, overwrite=args.overwrite).values():
@@ -924,6 +947,8 @@ def main() -> None:
                 work_dir=args.work_dir,
                 mmseqs_bin=args.mmseqs_bin,
                 threads=args.threads,
+                deduplicate_rotations=args.deduplicate_rotations,
+                deduplicate_reverse_complements=args.deduplicate_reverse_complements,
             )
         )
     elif args.command == "finalize-rollout":
@@ -938,6 +963,8 @@ def main() -> None:
                     args.accepted_fasta,
                     args.summary,
                     model_checkpoint=args.model_checkpoint,
+                    deduplicate_rotations=args.deduplicate_rotations,
+                    deduplicate_reverse_complements=args.deduplicate_reverse_complements,
                 )
             )
         else:
@@ -975,6 +1002,8 @@ def main() -> None:
                     clustering_report=args.clustering_report,
                     run_log=args.run_log,
                     safety_input_fasta=args.safety_input_fasta,
+                    deduplicate_rotations=args.deduplicate_rotations,
+                    deduplicate_reverse_complements=args.deduplicate_reverse_complements,
                 )
             )
 

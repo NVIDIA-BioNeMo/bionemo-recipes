@@ -14,7 +14,15 @@ Validate the raw denominator, retain raw-model scores when requested, deduplicat
 copies, run required safety and hard QC on representatives, and only then cluster passers in a
 deterministic candidate order. Exact deduplication ignores letter case but preserves the supplied
 start and strand. MMseqs also receives the supplied sequences; the PhiX defaults share coordinate 1.
-Arbitrarily rotated near-clones are not guaranteed to meet the alignment coverage threshold. Representative batching is
+After MMseqs, exact full-length rotation/RC equivalence merges linked clusters using all
+hard-QC members, not just representatives. Keep the earliest existing MMseqs representative
+in generation order and preserve its original ID/sequence; never reuse QC across starts/strands.
+Both comparisons default on for PhiX174. `cluster-post-qc --no-deduplicate-rotations --deduplicate-reverse-complements` selects RC-only merging for linear genomes; use
+`--no-deduplicate-reverse-complements` to disable RC independently. The example exposes
+`FINAL_DEDUP_ROTATIONS` and `FINAL_DEDUP_REVERSE_COMPLEMENTS` (each `0`/`1`, default `1`).
+These switches affect the extra exact-equivalence merge, not existing MMseqs similarity
+matches. Arbitrarily rotated **mutated** near-clones are not guaranteed to meet the alignment
+coverage threshold. Representative batching is
 acceptable only when record mapping remains complete and the representative result agrees with
 controls.
 
@@ -33,6 +41,13 @@ Final-design reports use schema 3, `counts.exact_sequence_representatives`, and
 `counts.post_qc_99pct_clusters`. Read coverage
 from the embedded clustering evidence: current runs use 95%, while historical runs
 may use different coverage at the same 99% identity.
+Clustering report schema 2 records `circular_deduplication.deduplicate_rotations`,
+`deduplicate_reverse_complements`, `mmseqs_clusters_before`, and `clusters_merged`;
+`artifacts.mmseqs_memberships_tsv` retains the unmerged MMseqs output. Finalization inherits
+the recorded settings (defaults both on without them), rejects conflicting explicit options,
+and checks for unmerged equivalents before exporting the order list. `final_deduplication`
+records the effective settings in the final report. These changes affect only final set selection,
+not online diversity rewards, initial exact-only deduplication, SFT splits, or hard QC.
 Likelihood ordering requires valid, nonempty `sampling_selection.prompt_anchors`
 establishing one origin. Missing, empty or malformed provenance keeps generation
 order and sets `ranking.comparable_across_circular_prompt_origins` to false;
@@ -53,4 +68,6 @@ a safety manifest is not safety-qualified.
 The example refreshes the derived Arc pipeline before new final screening, including
 a direct stage-50 entry. This applies current patches such as the CheckV quality gate;
 it does not rerun completed scientific artifacts or invalidate their stage markers.
-Use a new result root when changing scoring definitions.
+Use a new result root when changing scoring definitions or final-deduplication settings.
+To audit an old set, replay only final selection into separately versioned outputs from saved
+hard-QC FASTA and complete memberships; do not overwrite old results or rerun generation.

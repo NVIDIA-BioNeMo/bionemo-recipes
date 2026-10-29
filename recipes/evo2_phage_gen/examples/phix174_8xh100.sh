@@ -156,6 +156,13 @@ fi
 : "${RL_VALIDATION_RECORDS:=96}" "${RL_TRAIN_RECORDS:=96}" "${RL_SAVE_INTERVAL:=10}" "${RL_VAL_INTERVAL:=10}"
 : "${RL_TRAIN_MICRO_BATCH_SIZE:=8}" "${RL_PROMPT_BATCH_SIZE:=96}"
 : "${FINAL_GENERATION_COUNT:=1000}" "${FINAL_PROMPT_BATCH_SIZE:=96}"
+# PhiX174 is circular; other genomes can keep RC matching while disabling rotations.
+: "${FINAL_DEDUP_ROTATIONS:=1}" "${FINAL_DEDUP_REVERSE_COMPLEMENTS:=1}"
+for option_name in FINAL_DEDUP_ROTATIONS FINAL_DEDUP_REVERSE_COMPLEMENTS; do
+  if [[ "${!option_name}" != "0" && "${!option_name}" != "1" ]]; then
+    printf '%s must be 0 or 1; got %q\n' "${option_name}" "${!option_name}" >&2; exit 2
+  fi
+done
 : "${STAGE_TIMEOUT_SECONDS:=0}"
 for count_name in SFT_HOLDOUT_COUNT SFT_MAX_STEPS SFT_EVAL_INTERVAL SFT_EVAL_ITERS SFT_DECAY_STEPS \
   CALIBRATION_PROMPTS CALIBRATION_WORKERS RL_MAX_STEPS RL_GLOBAL_BATCH_SIZE RL_GENERATIONS_PER_PROMPT \
@@ -750,7 +757,8 @@ python - "${RESULT_ROOT}/settings.json" "${NUM_GPUS}" "${NUM_CPUS}" "${gpu_type}
   "${MODEL_VARIANT}" "${BASE_CHECKPOINT_RESOURCE}" "${MODEL_SIZE}" \
   "${WANDB_ENABLED}" "${WANDB_ENTITY_NAME}" "${WANDB_SFT_PROJECT_NAME}" "${WANDB_RL_PROJECT_NAME}" \
   "${WANDB_SFT_RUN_NAME}" "${WANDB_RL_RUN_NAME}" "${WANDB_INIT_TIMEOUT}" \
-  "${INFERENCE_PRECISION_NAME}" "${QUICK_E2E}" "${FINAL_GENERATION_COUNT}" <<'PY'
+  "${INFERENCE_PRECISION_NAME}" "${QUICK_E2E}" "${FINAL_GENERATION_COUNT}" \
+  "${FINAL_DEDUP_ROTATIONS}" "${FINAL_DEDUP_REVERSE_COMPLEMENTS}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -777,6 +785,8 @@ from pathlib import Path
     inference_precision,
     quick_e2e,
     final_generation_count,
+    final_dedup_rotations,
+    final_dedup_reverse_complements,
 ) = sys.argv[1:]
 wandb_is_enabled = wandb_enabled == "1"
 settings = {
@@ -794,6 +804,8 @@ settings = {
     "whole_genome": True,
     "safety_screen": "current configured databases",
     "final_generation_count": int(final_generation_count),
+    "final_deduplicate_rotations": final_dedup_rotations == "1",
+    "final_deduplicate_reverse_complements": final_dedup_reverse_complements == "1",
     "quick_e2e": quick_e2e == "1",
     "wandb_enabled": wandb_is_enabled,
     "wandb_entity": (wandb_entity or None) if wandb_is_enabled else None,
@@ -1114,6 +1126,9 @@ stage_50() {
   local dedup target diagnostic hard_qc clustering prepared_sft_root="${RESULT_ROOT}/rl/sft-checkpoint"
   local checkv_db repo_root
   local final_per_length
+  local -a final_dedup_args=(--deduplicate-rotations --deduplicate-reverse-complements)
+  [[ "${FINAL_DEDUP_ROTATIONS}" == "1" ]] || final_dedup_args[0]=--no-deduplicate-rotations
+  [[ "${FINAL_DEDUP_REVERSE_COMPLEMENTS}" == "1" ]] || final_dedup_args[1]=--no-deduplicate-reverse-complements
   local -a prompt_anchor_args=()
   load_sampling_selection
   for anchor in "${SAMPLING_PROMPT_ANCHORS[@]}"; do
@@ -1439,7 +1454,7 @@ PY
     run evo2_phage_generation cluster-post-qc --input-fasta "${hard_qc}/passers.fasta" \
       --output-fasta "${clustering}/representatives.fasta" \
       --memberships-csv "${clustering}/memberships.csv" --report "${clustering}/report.json" \
-      --work-dir "${clustering}/work" --mmseqs-bin data/external/bin/mmseqs --threads 16
+      --work-dir "${clustering}/work" --mmseqs-bin data/external/bin/mmseqs --threads 16 "${final_dedup_args[@]}"
     check_success_report "${hard_qc}/report.json"
     check_success_report "${clustering}/report.json"
     [[ "${DRY_RUN}" == "1" ]] || touch "${STAGE_DIR}/50-final-clustering.done"
@@ -1453,6 +1468,7 @@ PY
   else
     note 'record the raw and representative denominators, hard-QC waterfall, post-QC clusters, and limitations'
     run evo2_phage_generation finalize-rollout \
+      "${final_dedup_args[@]}" \
       --generated-fasta "${fasta}" --deduplication-mapping "${dedup}/mapping.csv" \
       --safety-input-fasta "${safety}/input-qc/qc2_nt_filter_seqs.fasta" \
       --safety-manifest "${safety}/scan/manifest.json" \

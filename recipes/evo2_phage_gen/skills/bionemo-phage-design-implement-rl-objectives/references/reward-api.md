@@ -26,7 +26,10 @@ and 95% reciprocal coverage. The default PhiX prompts share coordinate 1. A sequ
 rotation can change drastically after a point mutation and prevent near-clones from meeting
 coverage, so the recipe does not rotate or reverse-complement inputs before clustering. Arbitrary
 rotations are not guaranteed to cluster together; alternative prompt origins need separate
-qualification. Circular ORF and synteny handling remain independent of this alignment convention.
+qualification. Final set selection additionally merges clusters linked by exact full-length
+rotation/RC equivalents after QC; both comparisons default on for PhiX174 and can be disabled
+independently. This extra merge does **not** change the online `1/N` reward or transfer QC
+between orientations. Circular ORF and synteny handling remain independent of this alignment convention.
 One MMseqs job uses the configured `threads` for the entire pool. The synchronous trainer gathers task rows before
 scoring, so the pool spans generation workers; per-sample async scoring would need aggregation
 before this reward can express batch diversity. GDPO normalization remains separate, grouping by

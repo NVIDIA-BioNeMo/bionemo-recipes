@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "BioNeMo Phage Design",
     "shortDescription": "Run and interpret Evo 2 phage-design experiments.",
-    "longDescription": "Plan and run evidence-backed complete-genome phage design with lifecycle-wide host-range analysis, Evo 2 SFT, GDPO optimization, checkpoint selection, quality control, telemetry, and selective artifact publication.",
+    "longDescription": "Plan and run evidence-backed complete-genome phage design with lifecycle-wide host-range analysis, Evo 2 SFT, GDPO optimization, checkpoint selection, quality control, configurable final rotation/RC deduplication, telemetry, and selective artifact publication.",
     "developerName": "BioNeMo Recipes contributors",
     "category": "Science",
     "capabilities": [

@@ -147,6 +147,7 @@ Environment overrides take precedence over the preset. These controls also work 
 | `RL_TRAIN_RECORDS`; `RL_VALIDATION_RECORDS`                     |                 96; 96 |    8; 8 |
 | `RL_TRAIN_MICRO_BATCH_SIZE`; `RL_PROMPT_BATCH_SIZE` per GPU     |                  8; 96 |    1; 4 |
 | `FINAL_GENERATION_COUNT`; `FINAL_PROMPT_BATCH_SIZE` per GPU     |               1000; 96 |   16; 8 |
+| `FINAL_DEDUP_ROTATIONS`; `FINAL_DEDUP_REVERSE_COMPLEMENTS`      |                   1; 1 |    1; 1 |
 
 Choose batch sizes divisible by the GPU/microbatch layout and the generation-group size.
 `CALIBRATION_PROMPTS` sets the per-cell count for both generation and score validation.
@@ -424,9 +425,22 @@ inapplicability remains candidate-level `INDETERMINATE`, not a safety `PASS`.
 The result root is the computational notebook. `RUNLOG.md` records commands and liveness;
 `settings.json` records key settings; `SUMMARY.md` and `rollout/final-designs.json` reconcile
 selected checkpoints, safety outcomes, QC denominators, clustering, and accepted candidates.
-Final-design reports retain schema 2 and `counts.post_qc_99pct_clusters`. Exact thresholds
+Final-design reports use schema 3 and `counts.post_qc_99pct_clusters`. Exact thresholds
 are recorded in `evidence.post_qc_clustering.mmseqs`; current coverage is 95%, distinct
 from historical 80%-coverage reports at the same 99% identity.
+After MMseqs, final selection merges clusters linked by exact full-length rotation/RC
+equivalence of **any** passing member, retaining the earliest existing MMseqs representative
+in input order with its original ID, start, and strand. Both comparisons default on for PhiX174.
+For RC-only selection, set `FINAL_DEDUP_ROTATIONS=0 FINAL_DEDUP_REVERSE_COMPLEMENTS=1`;
+either setting accepts only `0` or `1`. Standalone `evo2_phage_generation cluster-post-qc`
+accepts `--no-deduplicate-rotations` and `--no-deduplicate-reverse-complements` independently.
+These switches control the extra exact-equivalence merge, not MMseqs similarity matching
+(which may already group opposite strands). Mutated, arbitrarily rotated near-clones are
+not guaranteed to merge. No training reward, initial exact-only deduplication, or QC rule changes.
+The schema-2 clustering report records both booleans, the original MMseqs cluster count, and
+additional merges; the raw MMseqs memberships are retained. Finalization inherits and checks
+these settings before exporting candidates. Use a new result root or separately versioned
+postprocessing outputs when changing them; completed stage markers do not rerun selection.
 The terminal and `RUNLOG.md` end with `RUN COMPLETE`, `RUN PAUSED`, or `RUN FAILED` plus stage
 progress; only `RUN COMPLETE` denotes successful completion of the requested invocation.
 Final likelihood scoring runs before deduplication and uses the validated direct model path in
@@ -611,7 +625,8 @@ for the exact flags and their roles.
   novelty. The launcher passes the saved safety manifest and its input FASTA to Arc;
   no additional safety search is needed. K and A\* are outside this synteny profile. DUST ≤0.9 is an online/checkpoint
   condition, not a repeated Arc final gate.
-- **Set-level selection** clusters final passers at 99% identity and 95% coverage of both genomes and retains representatives. The
+- **Set-level selection** clusters final passers at 99% identity and 95% coverage of both genomes,
+  then merges exact rotation/RC-equivalent clusters under the configured final-deduplication settings. The
   rollout-relative diversity reward is therefore not interpreted as an intrinsic genome PASS/FAIL
   property.
 

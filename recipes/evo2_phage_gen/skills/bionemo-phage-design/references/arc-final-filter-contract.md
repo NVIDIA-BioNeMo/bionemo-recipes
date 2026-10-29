@@ -13,16 +13,16 @@ is `src/bionemo/evo2_phage_gen/arc_final_filters.py`. Its pinned upstream source
 is `ab1a5d388dcd2085ad79909ea15f3666740d76486f8e4b43d25fdf6fb5553091` (ARC commit
 `53f195997257c56c00e5ef8d33a54f5baad143a6`). The online path leaves this setting absent.
 
-| Gate                | Final definition                                                                                                                            |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| ARC nucleotide QC   | A/C/G/T; 4,000–6,000 nt; GC 30–65%; homopolymer ≤10                                                                                         |
-| ARC protein support | At least 7 hit-bearing ORFs; not distinct consensus families                                                                                |
-| ARC tropism         | A G-protein hit with identity ≥60%                                                                                                          |
-| Circular-ORF AAI    | Mean lowest-E-value natural-protein hit per retained physical ORF, first tie retained; ≤95%. Original-inventory AAI is separately reported. |
-| Syntenic diversity  | Original ARC count rule (10–12 for each count, excluding 11/11) OR structured add-one-gene evidence; report both decisions separately       |
-| Added core gate     | A/B/C/D/E/F/G/H/J complete, ordered, with no excess full-coverage core copies                                                               |
-| Added safety gate   | Exact reconciled PASS; FAIL, INDETERMINATE or missing evidence cannot pass                                                                  |
-| Final set selection | Exact duplicates, then MMseqs 99% identity with 95% reciprocal coverage; one representative per cluster                                     |
+| Gate                | Final definition                                                                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ARC nucleotide QC   | A/C/G/T; 4,000–6,000 nt; GC 30–65%; homopolymer ≤10                                                                                                                                                        |
+| ARC protein support | At least 7 hit-bearing ORFs; not distinct consensus families                                                                                                                                               |
+| ARC tropism         | A G-protein hit with identity ≥60%                                                                                                                                                                         |
+| Circular-ORF AAI    | Mean lowest-E-value natural-protein hit per retained physical ORF, first tie retained; ≤95%. Original-inventory AAI is separately reported.                                                                |
+| Syntenic diversity  | Original ARC count rule (10–12 for each count, excluding 11/11) OR structured add-one-gene evidence; report both decisions separately                                                                      |
+| Added core gate     | A/B/C/D/E/F/G/H/J complete, ordered, with no excess full-coverage core copies                                                                                                                              |
+| Added safety gate   | Exact reconciled PASS; FAIL, INDETERMINATE or missing evidence cannot pass                                                                                                                                 |
+| Final set selection | MMseqs 99% identity / 95% reciprocal coverage on hard-QC passers, then exact rotation/RC cluster merging (independently configurable; both on for PhiX174); one original representative per merged cluster |
 
 The existing narrower length band, G coverage requirement and CheckV gate remain additional
 conditions. The filter-7 branch is a separate diagnostic with architecture enabled, never the

@@ -353,6 +353,8 @@ def test_dry_run(tmp_path: Path) -> None:
         "whole_genome": True,
         "safety_screen": "current configured databases",
         "final_generation_count": 1000,
+        "final_deduplicate_rotations": True,
+        "final_deduplicate_reverse_complements": True,
         "quick_e2e": False,
         "wandb_enabled": False,
         "wandb_entity": None,
@@ -1596,6 +1598,46 @@ def test_rejects_invalid_final_prompt_batch_size(tmp_path: Path) -> None:
 
     assert completed.returncode == 2
     assert "FINAL_PROMPT_BATCH_SIZE must be a positive integer" in completed.stderr
+
+
+@pytest.mark.parametrize("rotations,rc", [(1, 1), (0, 1), (1, 0), (0, 0)])
+def test_final_dedup_switches(tmp_path, rotations, rc):
+    result = tmp_path / "result"
+    completed = subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run", "--result-root", str(result)],
+        cwd=RECIPE_ROOT,
+        env={**os.environ, "FINAL_DEDUP_ROTATIONS": str(rotations), "FINAL_DEDUP_REVERSE_COMPLEMENTS": str(rc)},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    settings = json.loads((result / "settings.json").read_text())
+    assert settings["final_deduplicate_rotations"] is bool(rotations)
+    assert settings["final_deduplicate_reverse_complements"] is bool(rc)
+    command = next(
+        line
+        for line in (result / "RUNLOG.md").read_text().splitlines()
+        if "command: evo2_phage_generation cluster-post-qc" in line
+    )
+    assert ("--deduplicate-rotations" if rotations else "--no-deduplicate-rotations") in command
+    assert ("--deduplicate-reverse-complements" if rc else "--no-deduplicate-reverse-complements") in command
+
+
+@pytest.mark.parametrize("option", ["FINAL_DEDUP_ROTATIONS", "FINAL_DEDUP_REVERSE_COMPLEMENTS"])
+def test_final_dedup_invalid(tmp_path, option):
+    completed = subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run", "--result-root", str(tmp_path / "result")],
+        cwd=RECIPE_ROOT,
+        env={**os.environ, option: "false"},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 2
+    assert f"{option} must be 0 or 1" in completed.stderr
 
 
 def test_final_rollout_declares_independent_arc_contract():
