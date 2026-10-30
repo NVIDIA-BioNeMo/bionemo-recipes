@@ -137,35 +137,26 @@ class PredWriter(BasePredictionWriter):
             merged_data[key][batch_idx][rank] = data
 
         for key, batches in merged_data.items():
-            all_data = []
-            max_rank = max(max(rank_data.keys()) for rank_data in batches.values())
-
+            # Batch boundaries can differ between ranks under token-budget
+            # batching. Rebuild each complete rank stream before interleaving.
+            rank_parts = {}
             for batch_idx, rank_data in sorted(batches.items()):
-                batch_data = [None] * (max_rank + 1)
-
                 for rank, data in rank_data.items():
-                    batch_data[rank] = data
-
-                # - reconstruct the original order based on the sampling logic
-                total_size = sum(
-                    len(batch_data[rank]) for rank in range(len(batch_data)) if batch_data[rank] is not None
-                )
-                num_replicas = max_rank + 1
-                sample_data = next(data for data in batch_data if data is not None)
-                data_shape = (total_size,) + sample_data.shape[1:]  # noqa: RUF005
-                dtype = batch_data[0].dtype
-                reconstructed_data = np.empty(data_shape, dtype=dtype if batch_data[0] is not None else float)
-
-                for rank in range(len(batch_data)):
-                    if batch_data[rank] is not None:
-                        indices = list(range(rank, total_size, num_replicas))
-                        for i, idx in enumerate(indices):
-                            if i < len(batch_data[rank]):
-                                reconstructed_data[idx] = batch_data[rank][i]
-
-                all_data.append(reconstructed_data)
-
-            merged_array = np.concatenate(all_data, axis=0)
+                    rank_parts.setdefault(rank, []).append(data)
+            rank_streams = {rank: np.concatenate(parts, axis=0) for rank, parts in rank_parts.items()}
+            num_replicas = max(rank_streams) + 1
+            total_size = sum(len(data) for data in rank_streams.values())
+            sample_data = next(iter(rank_streams.values()))
+            merged_array = np.empty((total_size,) + sample_data.shape[1:], dtype=sample_data.dtype)  # noqa: RUF005
+            for rank in range(num_replicas):
+                data = rank_streams.get(rank)
+                expected_rows = len(range(rank, total_size, num_replicas))
+                if data is None or len(data) != expected_rows:
+                    raise ValueError(
+                        "Prediction rows are incompatible with stride sampling; "
+                        "sample identities are required for skipped or reordered rows."
+                    )
+                merged_array[rank::num_replicas] = data
             merged_file_path = os.path.join(self.output_dir, f"{key}_merged.npy")
             np.save(merged_file_path, merged_array)
 
