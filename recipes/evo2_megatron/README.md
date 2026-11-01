@@ -247,7 +247,7 @@ tokenizer settings, and preprocessing options. See the `fine-tuning-tutorial.ipy
 notebook in `examples/` for a complete example.
 
 Seeded per-record augmentation uses the first eight bytes of the SHA-256 digest
-of the exact UTF-8 input path string, interpreted as a big-endian integer, plus
+of the exact input path string encoded as UTF-8 with `surrogatepass`, interpreted as a big-endian integer, plus
 the configured seed and the zero-based record index. This replaces Python's
 interpreter-dependent path hash. Reverse-complement choices and lineage dropout
 therefore repeat for the same seed, path spelling and record order across

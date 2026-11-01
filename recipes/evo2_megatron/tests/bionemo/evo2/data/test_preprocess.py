@@ -127,6 +127,14 @@ print(hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest())
     assert len(set(digests)) == 1
 
 
+def test_record_non_utf8_path(tmp_path: Path) -> None:
+    """Path identities support Python's surrogate-escaped filesystem names."""
+    config = create_preprocessing_config(tmp_path, tmp_path / "input.fasta")
+    preprocessor = Evo2Preprocessor(config)
+    records, _ = preprocessor.preprocess_data(os.fsdecode(b"input_\xff.fasta"), "record", "AAAACCGT", 0, config)
+    assert records
+
+
 def test_preprocessing_worker_parity(tmp_path: Path) -> None:
     """One and two workers produce the same augmented records and split membership."""
     fasta = tmp_path / "input.fasta"

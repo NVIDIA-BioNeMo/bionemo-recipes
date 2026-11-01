@@ -265,7 +265,9 @@ class Evo2Preprocessor:
         # Preprocess data.
         preproc_data = []
         # Keep the file identity stable across Python interpreters and hash seeds.
-        file_seed = int.from_bytes(hashlib.sha256(filepath.encode("utf-8")).digest()[:8], "big")
+        file_seed = int.from_bytes(
+            hashlib.sha256(filepath.encode("utf-8", errors="surrogatepass")).digest()[:8], "big"
+        )
         with self.preprocessing_context_manager(
             config.seed + file_seed + seq_idx if config.seed is not None else None
         ):
