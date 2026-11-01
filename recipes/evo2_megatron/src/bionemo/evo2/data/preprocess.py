@@ -23,6 +23,7 @@ It can also be utilized as a script to dump pre-processed data to JSON.
 """
 
 import argparse
+import hashlib
 import logging
 import multiprocessing as mp
 import os
@@ -257,8 +258,10 @@ class Evo2Preprocessor:
 
         # Preprocess data.
         preproc_data = []
+        # Keep the file identity stable across Python interpreters and hash seeds.
+        file_seed = int.from_bytes(hashlib.sha256(filepath.encode("utf-8")).digest()[:8], "big")
         with self.preprocessing_context_manager(
-            config.seed + hash(filepath) + seq_idx if config.seed is not None else None
+            config.seed + file_seed + seq_idx if config.seed is not None else None
         ):
             # Randomly reverse complement the sequence.
             seq = self._random_reverse_complement(seq, prob=config.random_reverse_complement)
