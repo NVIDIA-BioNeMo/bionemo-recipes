@@ -179,6 +179,11 @@ def convert_qwen3_te_to_hf(model_te: NVQwen3ForCausalLM, **config_kwargs) -> Qwe
     with torch.device("meta"):
         model_hf = Qwen3ForCausalLM(hf_config)
 
+    if model_hf.config.tie_word_embeddings:
+        state_dict_ignored_entries = model_hf._tied_weights_keys
+    else:
+        state_dict_ignored_entries = []
+
     output_model = state.apply_transforms(
         model_te,
         model_hf,
@@ -202,10 +207,12 @@ def convert_qwen3_te_to_hf(model_te: NVQwen3ForCausalLM, **config_kwargs) -> Qwe
                 fn=state.TransformFns.split_fc1,
             ),
         ],
-        state_dict_ignored_entries=model_hf._tied_weights_keys,
+        state_dict_ignored_entries=state_dict_ignored_entries,
     )
 
     output_model.model.rotary_emb.inv_freq = model_te.model.rotary_emb.inv_freq.clone()
-    output_model.tie_weights()
+
+    if model_hf.config.tie_word_embeddings:
+        output_model.tie_weights()
 
     return output_model
