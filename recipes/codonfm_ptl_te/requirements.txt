@@ -146,7 +146,7 @@ multiprocess==0.70.16
 mypy_extensions==1.1.0
 natsort==8.4.0
 nbclient==0.10.2
-nbconvert==7.16.6
+nbconvert==7.17.2
 nbformat==5.10.4
 nest-asyncio==1.6.0
 networkx==3.5
