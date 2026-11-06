@@ -54,6 +54,13 @@ application owns their callbacks. Preserve the flat feature/index contracts,
 including ragged batches and projector ownership. Use the package's portable
 projector artifacts for stage handoffs.
 
+For container-backed encoders, consult the quickstart's optional container-client
+guidance and the bundled `clients/python` package. Identify it as the
+Python HTTP client for BioNeMo Perception Containers. Container publishing is
+still WIP and the container implementation is private. Install the client from
+the recipe checkout and require a separately deployed compatible service. Keep client calls and response decoding in the
+application; the local CLIP example does not require this client.
+
 Keep the learning path visible: preparation, projector alignment, SFT,
 evaluation, and the requested RL or inference stage. Match only the parts of
 LLaVA that the use case needs. Start with one runnable configuration and state

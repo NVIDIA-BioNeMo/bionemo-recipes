@@ -44,10 +44,7 @@ It does not reinstall training frameworks. The default base uses BioNeMo's publi
 From the BioNeMo `recipes/nemotron-stitch` directory:
 
 ```bash
-git clone https://github.com/NVIDIA-dev/bionemo-perception-containers.git ../bionemo-perception-containers
-git -C ../bionemo-perception-containers checkout aa831c731f30e9f7bb878e9e29c0e61848f36e1d
 docker build -f examples/Dockerfile \
-  --build-context perception=../bionemo-perception-containers \
   -t stitch-examples .
 ```
 
@@ -58,11 +55,15 @@ services. The optional `super` build target selects Transformers 5.18 in every
 worker and requires a compatible AutoModel base supplied through `BASE_IMAGE`.
 The image applies no framework source patches.
 
-The perception repository supplies the client and encoder services; no other
-application repository or prebuilt dataset is needed. For an existing compatible
-NeMo environment, install this package and the selected example with `--no-deps`,
-install `../bionemo-perception-containers/clients/python[numpy]`, and put the
-selected example directory on `PYTHONPATH`.
+The [Python container client](../clients/python/README.md) is bundled in this
+recipe and installed from the local build context. The container implementation
+is private, and **container publishing is still work in progress (WIP)**.
+The client does not supply an encoder container; genetics and chemistry require
+separately deployed compatible services.
+
+For an existing compatible NeMo environment, install this package and the
+selected example with `--no-deps`, install `./clients/python[numpy]` from the
+recipe directory, and put the selected example directory on `PYTHONPATH`.
 
 ## Connect to the encoders
 
@@ -81,34 +82,15 @@ URLs are not written into feature manifests or caches. Preparation fails on
 HTTP errors, invalid checksums, wrong layers/pooling, nonfinite features, or
 incompatible geometry. It never substitutes random features.
 
-Local services require GPUs, their model weights, and the perception images.
-Build and launch instructions are in the upstream
-[Evo2 service](https://github.com/NVIDIA-dev/bionemo-perception-containers/tree/main/models/evo2)
-and [KERMT service](https://github.com/NVIDIA-dev/bionemo-perception-containers/tree/main/models/kermt)
-documentation. Both can run on the same machine as the training container.
-The local genetics service below uses the **1B profile**, exposing `decoder.layers.12`
-with 1,920-wide features and window-64 mean pooling, on one GPU. Set the gene
-YAML projector widths to 1920 for that service; the shipped defaults use the
+Obtain the deployed encoder URLs and any access tokens from your service
+operator. Published image names and public server build instructions are not
+available yet. The service must expose the canonical `/v1/forward` API and the
+layers, pooling, and geometry required by the selected example.
+
+For an Evo2-1B service exposing `decoder.layers.12` with window-64 mean pooling,
+set the gene YAML projector input widths to 1920; the shipped defaults use the
 production Evo2-20B width of 8192. KERMT must expose unpooled molecule, atom,
-and both bond branches.
-Example local launch commands, after provisioning those images and weights:
-
-```bash
-# Build the current /v1/forward server; EVO2_CACHE_DIR supplies its populated 1B NIM cache.
-docker build -f ../bionemo-perception-containers/models/evo2/Dockerfile \
-  -t bionemo-perception-evo2:local ../bionemo-perception-containers
-docker run --rm --gpus '"device=0"' --shm-size=16g -p 127.0.0.1:8000:8000 \
-  -v "$EVO2_CACHE_DIR:/opt/nim/.cache:ro" \
-  -v "$PWD/../bionemo-perception-containers/packaging/nimcraft/evo2.model_manifest.yaml:/manifest.yaml:ro" \
-  -e NIM_MANIFEST_PATH=/manifest.yaml -e NIM_DISABLE_MODEL_DOWNLOAD=true \
-  -e NIM_CACHE_PATH=/opt/nim/.cache -e EVO2_MODEL_ID=evo2-1b-8k \
-  -e EVO2_EMBEDDINGS_LAYER=decoder.layers.12 bionemo-perception-evo2:local
-
-# In another terminal. KERMT_WEIGHTS_ROOT must contain the converted safetensors checkpoint.
-# KERMT_IMAGE defaults to bionemo-perception-kermt:local, built from its upstream Dockerfile.
-KERMT_WEIGHTS_ROOT=/absolute/path/to/kermt-weights \
-  docker compose -f ../bionemo-perception-containers/models/kermt/compose.yaml up
-```
+and both bond branches. Keep the endpoint geometry and configuration aligned.
 
 Stop encoder services after cache preparation to free their GPUs for training.
 

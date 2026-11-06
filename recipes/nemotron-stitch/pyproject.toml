@@ -31,21 +31,27 @@ dev = [
   "pytest>=8.3",
   "pyrefly>=1.2",
   "ruff>=0.11",
+  "bionemo-perception-client",
 ]
 
 [tool.uv.build-backend]
 # Domain tests load the independently installable examples from the source tree.
-source-include = ["tests/**", "examples/**"]
+source-include = ["tests/**", "examples/**", "clients/python/**"]
 source-exclude = [
   "**/__pycache__/**", "**/*.egg-info/**",
   "examples/*/artifacts/**", "examples/*/outputs/**",
   "examples/*/third_party/**", "examples/*/.venv/**",
+  "clients/python/build/**", "clients/python/dist/**",
+  "clients/python/.*cache/**", "clients/python/.venv/**",
 ]
 
+[tool.uv.sources]
+bionemo-perception-client = { path = "clients/python", editable = true }
+
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "clients/python/tests"]
 addopts = "-ra"
-pythonpath = ["src"]
+pythonpath = ["src", "clients/python/src"]
 
 # Type checking: `pyrefly check` from the repo root covers the package and the
 # example together. Tests are out of scope: their doubles duck-type framework

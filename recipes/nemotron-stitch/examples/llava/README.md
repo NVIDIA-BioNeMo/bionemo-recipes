@@ -106,10 +106,7 @@ The environment (NeMo RL `9a842983`, AutoModel `b916107a`, vLLM
 `recipes/nemotron-stitch` directory:
 
 ```bash
-git clone https://github.com/NVIDIA-dev/bionemo-perception-containers.git ../bionemo-perception-containers
-git -C ../bionemo-perception-containers checkout aa831c731f30e9f7bb878e9e29c0e61848f36e1d
 docker build -f examples/Dockerfile \
-  --build-context perception=../bionemo-perception-containers \
   -t stitch-examples .
 
 # Any GPU SKU: --gpus all exposes every device (restrict a subset with

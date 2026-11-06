@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bionemo-perception-client"
+version = "0.1.0"
+description = "Model-neutral parser for BioNeMo Perception Container tensor responses (BNMOFWD1)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = ["typing_extensions>=4.12,<5", "xxhash>=4.0,<5"]
+
+[project.optional-dependencies]
+numpy = ["numpy>=1.26,<3"]
+torch = ["torch>=2.0"]
+test = ["mypy>=1.17,<2", "numpy>=1.26,<3", "pytest>=8.3", "torch>=2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bionemo_perception = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -28,6 +28,11 @@ agent that can read and edit repository files. Framework tests and training
 use the image pinned by the selected recipe. Model, data, registry, and compute
 credentials depend on the requested example.
 
+Container-backed encoders may use the optional `bionemo-perception-client`
+Python HTTP client bundled under the recipe's `clients/python` directory. Container publishing is
+still WIP and container source is private; this path requires a separately deployed compatible service and
+application-owned response decoding.
+
 ## Known Risks and Mitigations
 
 - The installed skill may be separate from the source checkout: locate and
