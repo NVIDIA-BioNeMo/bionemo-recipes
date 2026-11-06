@@ -5,6 +5,9 @@
 !src/**
 !tests/
 !tests/**
+!clients/
+!clients/python/
+!clients/python/**
 !examples/
 !examples/README.md
 !examples/llava/
