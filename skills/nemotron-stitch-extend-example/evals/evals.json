@@ -67,13 +67,15 @@
     },
     {
       "id": "stitch-010-container-client",
-      "prompt": "Adapt a Stitch example to query an encoder using the Python container client bundled under clients/python. The container implementation is private. Can I pull a published container and use it directly?",
+      "prompt": "Adapt a Stitch example to query an encoder using the bundled Python container client. The container implementation is private, and my authenticated URL redirects. Can I pull a published container and use it directly?",
       "expected_output": "Identify the container client, explain that container publishing is still WIP, and describe the application-owned integration with a separately deployed compatible service.",
       "assertions": [
         "Read the quickstart container-client guidance and inspect the bundled client's current API.",
         "Identify bionemo-perception-client as the Python HTTP client for BioNeMo Perception Containers.",
         "State that container publishing is still WIP and do not invent a published image or tag.",
         "Install the client from the recipe checkout without requiring private container source access.",
+        "Use the final forward URL for authenticated services because redirects omit bearer authorization.",
+        "Validate empty tensor outputs against the application's projector geometry.",
         "Require a separately deployed compatible service and keep client calls and tensor-response decoding in the application.",
         "Explain that the local CLIP example does not require this client."
       ],

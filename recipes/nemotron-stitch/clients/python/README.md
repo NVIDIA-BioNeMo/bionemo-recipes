@@ -62,6 +62,9 @@ The request schemas are exported from `bionemo_perception` for type checking.
 
 `token=` sends `Authorization: Bearer <token>`. Surrounding whitespace is
 stripped; empty tokens and tokens containing internal whitespace are rejected.
+Bearer authorization is sent only to the initial URL and is omitted on all
+redirects, including redirects to another origin or from HTTPS to HTTP. Use the
+service's final forward URL for authenticated requests.
 Omit the token for an open service. Non-successful HTTP responses raise
 `PerceptionRequestError`, which exposes `status_code`, `body`, and `url`.
 Transport errors and timeouts propagate from Python's `urllib`.
@@ -80,8 +83,9 @@ else:
     features = wire.torch_float32().clone()
 ```
 
-These conversion methods initially return views over the response buffer;
-clone before modifying the tensor. In your application, validate the selected
+For nonempty payloads, these conversion methods return views over the response
+buffer; clone before modifying the tensor. Zero-extent outputs return empty
+CPU tensors with the declared shape and dtype. In your application, validate the selected
 output, feature width, token count, and any batch or ragged row boundaries
 before passing features to the projector. Do not assume every model emits
 `[T, F]` directly. Prompt placeholder counts must match the projector's output

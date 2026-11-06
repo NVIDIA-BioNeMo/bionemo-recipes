@@ -24,6 +24,7 @@ from bionemo_perception import (
 
 
 def check_forward_signatures() -> None:
+    """Accept model-specific request fields and reject ESM-3 fields on Evo 2."""
     esm3 = ESM3Client("http://localhost:8000")
     esm3.forward(
         sequence="AC",

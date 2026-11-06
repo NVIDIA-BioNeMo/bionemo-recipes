@@ -25,3 +25,6 @@ bionemo_perception = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.mypy]
+warn_unused_ignores = true

@@ -91,6 +91,7 @@ class PerceptionRequestError(RuntimeError):
     """An inference container returned a non-successful HTTP response."""
 
     def __init__(self, status_code: int, body: str, url: str) -> None:
+        """Retain the HTTP status, response body, and failing URL."""
         self.status_code = status_code
         self.body = body
         self.url = url
@@ -115,6 +116,7 @@ class PerceptionClient(Generic[RequestT]):
     token: str | None = None
 
     def __post_init__(self) -> None:
+        """Validate the service URL, timeout, and normalized bearer token."""
         parsed = urlsplit(self.url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("url must be an absolute HTTP(S) URL")
@@ -145,19 +147,21 @@ class PerceptionClient(Generic[RequestT]):
             "Content-Type": "application/json",
             "User-Agent": "bionemo-perception-client/0.1",
         }
-        if self.token is not None:
-            headers["Authorization"] = f"Bearer {self.token}"
         http_request = urllib.request.Request(
             request_url,
             data=body,
             headers=headers,
             method="POST",
         )
+        if self.token is not None:
+            # urllib copies normal headers on redirects, including across origins.
+            http_request.add_unredirected_header("Authorization", f"Bearer {self.token}")
         try:
             with urllib.request.urlopen(http_request, timeout=self.timeout) as response:
                 return parse_response(response.read())
         except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors="replace").strip()
+            with error:
+                detail = error.read().decode(errors="replace").strip()
             raise PerceptionRequestError(error.code, detail, request_url) from error
 
 
@@ -166,6 +170,7 @@ class ESM3Client(PerceptionClient[ESM3ForwardRequest]):
     """Typed client for ESM-3's canonical ``/v1/forward`` request."""
 
     def forward(self, **kwargs: Unpack[ESM3ForwardRequest]) -> ForwardResponse:
+        """Send this model's typed forward request and parse the tensor response."""
         return self.forward_payload(kwargs)
 
 
@@ -174,6 +179,7 @@ class Evo2Client(PerceptionClient[Evo2ForwardRequest]):
     """Typed client for Evo 2's canonical ``/v1/forward`` request."""
 
     def forward(self, **kwargs: Unpack[Evo2ForwardRequest]) -> ForwardResponse:
+        """Send this model's typed forward request and parse the tensor response."""
         return self.forward_payload(kwargs)
 
 
@@ -182,4 +188,5 @@ class KERMTClient(PerceptionClient[KermtForwardRequest]):
     """Typed client for KERMT's canonical ``/v1/forward`` request."""
 
     def forward(self, **kwargs: Unpack[KermtForwardRequest]) -> ForwardResponse:
+        """Send this model's typed forward request and parse the tensor response."""
         return self.forward_payload(kwargs)

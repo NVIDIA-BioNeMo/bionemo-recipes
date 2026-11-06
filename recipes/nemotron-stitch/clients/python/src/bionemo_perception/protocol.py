@@ -80,6 +80,7 @@ class WireTensor:
 
         The returned tensor shares the underlying buffer, so it remains valid
         only as long as the original response payload is alive.
+        Zero-extent shapes return an empty CPU tensor instead.
         """
 
         if self.dtype != DTYPE:
@@ -88,10 +89,12 @@ class WireTensor:
             import torch
         except ModuleNotFoundError as error:  # pragma: no cover - optional dependency
             raise RuntimeError("install bionemo-perception-client[torch] for torch tensor views") from error
+        if self.data.nbytes == 0:
+            return torch.empty(self.shape, dtype=torch.bfloat16, device="cpu")
         return torch.frombuffer(self.data, dtype=torch.bfloat16).reshape(self.shape)
 
     def torch_float32(self) -> Any:
-        """Return a zero-copy ``torch.float32`` tensor view (float32-le envelopes only)."""
+        """Return an FP32 buffer view, or an empty CPU tensor for a zero-extent shape."""
 
         if self.dtype != DTYPE_F32:
             raise ProtocolError(f"tensor {self.name} is {self.dtype}, not {DTYPE_F32}")
@@ -99,6 +102,8 @@ class WireTensor:
             import torch
         except ModuleNotFoundError as error:  # pragma: no cover - optional dependency
             raise RuntimeError("install bionemo-perception-client[torch] for torch tensor views") from error
+        if self.data.nbytes == 0:
+            return torch.empty(self.shape, dtype=torch.float32, device="cpu")
         return torch.frombuffer(self.data, dtype=torch.float32).reshape(self.shape)
 
 
@@ -118,6 +123,7 @@ class ForwardResponse:
     tensor_metadata: tuple[Mapping[str, Any], ...]
 
     def tensor(self, name: str) -> WireTensor:
+        """Return the uniquely named response tensor or raise KeyError."""
         matches = [tensor for tensor in self.tensors if tensor.name == name]
         if len(matches) != 1:
             raise KeyError(name)
@@ -144,6 +150,7 @@ def parse_forward_response(
 
 
 def _parse_forward(view: memoryview, *, validate_checksum: bool) -> ForwardResponse:
+    """Validate the envelope and construct tensor views and output metadata."""
     metadata, payload_offset, payload = _parse_envelope(view)
     expected_version = 2 if bytes(view[:8]) == LEGACY_V2_MAGIC else FORMAT_VERSION
     _validate_metadata(metadata, payload.nbytes, expected_version=expected_version)
@@ -182,6 +189,7 @@ def _parse_forward(view: memoryview, *, validate_checksum: bool) -> ForwardRespo
 
 
 def _byte_view(content: bytes | bytearray | memoryview) -> memoryview:
+    """Normalize a contiguous input buffer into an unsigned-byte view."""
     view = memoryview(content)
     if not view.contiguous:
         raise ProtocolError("response buffer must be contiguous")
@@ -191,6 +199,7 @@ def _byte_view(content: bytes | bytearray | memoryview) -> memoryview:
 def _parse_envelope(
     content: memoryview,
 ) -> tuple[dict[str, Any], int, memoryview]:
+    """Decode framing and JSON metadata after validating offsets and padding."""
     if content.nbytes < PREAMBLE_BYTES:
         raise ProtocolError("response envelope is truncated")
     magic = bytes(content[:8])
@@ -219,13 +228,17 @@ def _parse_envelope(
 
 
 def _non_negative_int(value: object) -> bool:
+    """Accept nonnegative integers while excluding booleans."""
     return type(value) is int and value >= 0
 
 
 def _validate_metadata(metadata: dict[str, Any], payload_bytes: int, *, expected_version: int = FORMAT_VERSION) -> None:
+    """Validate contract types, tensor descriptors, and contiguous payload geometry."""
     expected = {"format_version", "dtype", "tensors", "payload_bytes", "payload_checksum"}
     if set(metadata) != expected:
         raise ProtocolError("forward metadata fields are invalid")
+    if not isinstance(metadata["dtype"], str) or type(metadata["format_version"]) is not int:
+        raise ProtocolError("forward metadata contract fields are invalid")
     elt_size = DTYPE_ELT_SIZE.get(metadata["dtype"])
     if metadata["format_version"] != expected_version or elt_size is None:
         raise ProtocolError("forward metadata contract fields are invalid")
@@ -272,6 +285,7 @@ def _validate_metadata(metadata: dict[str, Any], payload_bytes: int, *, expected
 
 
 def _validate_checksum(metadata: dict[str, Any], payload: memoryview, validate: bool) -> None:
+    """Check the checksum descriptor and optionally verify payload integrity."""
     checksum = metadata.get("payload_checksum")
     if (
         not isinstance(checksum, dict)
