@@ -141,7 +141,6 @@ runtime. The same Dockerfile has a `super` target that selects Transformers
 
 ```bash
 docker build -f examples/Dockerfile --target super \
-  --build-context perception=../bionemo-perception-containers \
   --build-arg BASE_IMAGE=your-registry/super-base:tag \
   -t stitch-examples:super .
 ```

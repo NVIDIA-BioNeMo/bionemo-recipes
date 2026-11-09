@@ -15,15 +15,14 @@ COPY pyproject.toml README.md /opt/stitch/
 COPY src /opt/stitch/src
 COPY examples /opt/stitch/examples
 COPY tests /opt/stitch/tests
-# Supply the upstream client as a named context, without embedding credentials.
-COPY --from=perception /clients/python /opt/perception-client
+COPY clients/python /opt/stitch/clients/python
 RUN set -eu; \
     mkdir -p /opt/stitch/examples/llava/third_party; \
     ln -s /opt/nemo-rl /opt/stitch/examples/llava/third_party/nemo-rl; \
     for interpreter in /opt/nemo_rl_venv/bin/python /opt/ray_venvs/*/bin/python; do \
       uv pip install --python "$interpreter" --no-deps /opt/stitch \
         /opt/stitch/examples/llava /opt/stitch/examples/genetics /opt/stitch/examples/chemistry; \
-      uv pip install --python "$interpreter" /opt/perception-client pytest 'rdkit==2025.9.1'; \
+      uv pip install --python "$interpreter" '/opt/stitch/clients/python[numpy]' pytest 'rdkit==2025.9.1'; \
     done
 
 # Same fused-loss implementation as the production gene and chemistry recipes.

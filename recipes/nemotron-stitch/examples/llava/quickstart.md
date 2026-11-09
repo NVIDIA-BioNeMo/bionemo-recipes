@@ -176,6 +176,31 @@ requirement on encoders. If your encoder returns another representation, such
 as BF16 bytes, decode it directly to a PyTorch tensor in your data-loading code;
 there is no need to round-trip through NumPy.
 
+### Container client (optional)
+
+This recipe includes the
+[`bionemo-perception-client` Python container client](../../clients/python/README.md)
+for querying BioNeMo Perception Containers. It provides typed `Evo2Client`,
+`ESM3Client`, and `KERMTClient` HTTP clients and a binary tensor-response parser.
+Install it from the recipe directory:
+
+```bash
+python -m pip install './clients/python[torch]'
+```
+
+The shared examples Dockerfile includes the client. See its local README for requests,
+authentication, and tensor decoding. **Container publishing is still work in
+progress (WIP)**. The container implementation is private; you need a separately
+deployed compatible service and its URL. Installing the client does not start
+or provide an encoder container.
+
+Use the client inside your application's encoder callable and decode the
+selected response tensors into the feature geometry expected by your projector.
+Keep preprocessing, output selection, and response decoding in the application.
+If you use `prepare_features`, adapt the result to its NumPy cache format;
+otherwise, your data-loading boundary can supply PyTorch tensors directly.
+The runnable LLaVA example uses local CLIP and does not require this client.
+
 ### Base-model registration
 
 Declare each base model that the application can register:

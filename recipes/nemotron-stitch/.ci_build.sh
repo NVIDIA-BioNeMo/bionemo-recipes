@@ -7,6 +7,7 @@ set -euo pipefail
 # exercises the pull request rather than the copy baked into the image.
 for python in /opt/nemo_rl_venv/bin/python /opt/ray_venvs/*/bin/python; do
     uv pip install --python "$python" --no-deps --editable .
+    uv pip install --python "$python" --editable './clients/python[numpy]'
     # vLLM discovers example registrations in each executor's interpreter.
     for example in llava genetics chemistry; do
         uv pip install --python "$python" --no-deps --editable "examples/$example"

@@ -28,6 +28,15 @@ agent that can read and edit repository files. Framework tests and training
 use the image pinned by the selected recipe. Model, data, registry, and compute
 credentials depend on the requested example.
 
+Container-backed encoders may use the optional `bionemo-perception-client`
+Python HTTP client documented in
+`$BIONEMO_RECIPES/recipes/nemotron-stitch/clients/python/README.md`. Container publishing is
+still WIP and container source is private; this path requires a separately deployed compatible service and
+application-owned response decoding.
+Use the final endpoint URL for authenticated requests; redirects omit bearer
+authorization. Empty wire outputs remain empty CPU tensors and still require
+application geometry validation.
+
 ## Known Risks and Mitigations
 
 - The installed skill may be separate from the source checkout: locate and

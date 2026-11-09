@@ -133,6 +133,15 @@ preparation. These utilities are optional. An application with an existing
 cache, online encoder, or native binary format can provide its own data-loading
 boundary without changing the projector or framework contracts.
 
+For encoders served by BioNeMo Perception Containers, this recipe includes the
+[`bionemo-perception-client` Python container client](clients/python/README.md).
+It provides HTTP clients and a binary tensor-response parser; install it from
+`clients/python` in this checkout. **Container publishing is still work in
+progress (WIP)**. You need a separately deployed compatible service; the
+container implementation is private. Application code owns decoding responses
+into feature tensors; see the
+[container-client guidance](examples/llava/quickstart.md#container-client-optional).
+
 ### Framework integration
 
 - **NeMo AutoModel**: out-of-tree model registration, multimodal forward-input
