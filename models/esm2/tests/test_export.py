@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import pytest
+import torch
 from transformers import AutoModel, AutoModelForMaskedLM, AutoModelForTokenClassification, AutoTokenizer
 
 from export import export_hf_checkpoint
@@ -57,6 +58,24 @@ def test_auto_model_for_token_classification_loading(exported_8m_checkpoint):
     assert model_for_token_classification.classifier.weight.shape[0] == 8
     assert not loading_info["mismatched_keys"]
     assert not loading_info["error_msgs"]
+
+
+def test_exported_checkpoint_forward_pass(exported_8m_checkpoint):
+    """Test that the bundled esm_nv.py runs a padded forward pass, not just loads."""
+    model = AutoModelForMaskedLM.from_pretrained(
+        exported_8m_checkpoint, trust_remote_code=True, dtype=torch.bfloat16
+    ).cuda()
+    model.eval()
+    tokenizer = AutoTokenizer.from_pretrained(exported_8m_checkpoint)
+    inputs = tokenizer(["MKTAYIAKQRQISFVKSHFSRQ", "MLSRAVCGTSRQLAPVLGYLGSRQKHSLPD"], return_tensors="pt", padding=True)
+    inputs = {k: v.cuda() for k, v in inputs.items()}
+    assert not inputs["attention_mask"].all(), "Inputs should include padding to exercise the attention mask."
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    assert outputs.logits.shape[:2] == inputs["input_ids"].shape
+    assert torch.isfinite(outputs.logits).all()
 
 
 def test_auto_tokenizer_loading(exported_8m_checkpoint):

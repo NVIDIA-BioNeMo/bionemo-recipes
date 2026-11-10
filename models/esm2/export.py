@@ -118,13 +118,21 @@ def export_hf_checkpoint(tag: str, export_path: Path):
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Smoke test that the model can be loaded.
+    # Smoke test that the exported model can be loaded and run with its bundled esm_nv.py.
     model_te = AutoModelForMaskedLM.from_pretrained(
         export_path / tag,
         dtype=torch.bfloat16,
         trust_remote_code=True,
-    )
-    del model_te
+    ).cuda()
+    model_te.eval()
+    tokenizer = AutoTokenizer.from_pretrained(export_path / tag)
+    inputs = tokenizer(["MKTAYIAKQRQISFVKSHFSRQ", "MLSRAVCGTSRQLAPVLGYLGSRQKHSLPD"], return_tensors="pt", padding=True)
+    inputs = {k: v.cuda() for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model_te(**inputs)
+    if outputs.logits.shape[:2] != inputs["input_ids"].shape or not torch.isfinite(outputs.logits).all():
+        raise RuntimeError(f"Exported checkpoint {tag} failed the forward-pass smoke test.")
+    del model_te, tokenizer, inputs, outputs
     gc.collect()
     torch.cuda.empty_cache()
 

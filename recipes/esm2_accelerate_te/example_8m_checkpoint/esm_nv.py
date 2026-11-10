@@ -41,7 +41,6 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from transformer_engine.pytorch.attention.dot_product_attention import utils as te_attention_utils
 from transformer_engine.pytorch.attention.rope import RotaryPositionEmbedding
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPooling,
@@ -498,14 +497,9 @@ class NVEsmModel(NVEsmPreTrainedModel):
         if attention_mask is None:
             attention_mask = torch.ones(((batch_size, seq_length)), device=device)
 
-        # Expand the [batch_size, seq_length] padding mask to a [batch_size, 1, 1, seq_length] additive mask
-        # (0 for attended positions, dtype.min for masked positions) that broadcasts over heads and queries.
-        extended_attention_mask: torch.Tensor = AttentionMaskConverter(is_causal=False).to_4d(
-            attention_mask, query_length=1, dtype=self.dtype
-        )
-
-        # TE expects a boolean attention mask, where True means masked and False means not masked
-        extended_attention_mask = extended_attention_mask < -1
+        # TE expects a boolean [batch_size, 1, 1, seq_length] padding mask (broadcast over heads and queries),
+        # where True means masked and False means not masked.
+        extended_attention_mask = attention_mask[:, None, None, :] == 0
 
         embedding_output = self.embeddings(
             input_ids=input_ids,
