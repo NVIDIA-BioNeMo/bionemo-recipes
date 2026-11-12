@@ -15,6 +15,7 @@
 
 import csv
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 
 import datasets
@@ -62,6 +63,38 @@ SS8_LABEL2ID = {
     "C": 7,
     "L": 7,
 }  # '~' denotes coil / unstructured
+
+
+def tokenize_function(example, *, tokenizer, tokenize_args: dict, ss_token_map: dict[str, int]):
+    """Tokenize both the input protein sequence and the secondary structure labels."""
+    result = tokenizer(example["Sequence"], **tokenize_args)
+
+    # While we can use the rust-based tokenizer for the protein sequence, we manually encode the secondary structure
+    # labels. Our goal is to return a list of integer labels with the same shape as the input_ids.
+    labels = []
+    for batch_idx in range(len(result["input_ids"])):
+        sequence_labels = []
+
+        # This array maps the possibly-chunked result["input_ids"] to the original sequence. Because of
+        # `return_overflowing_tokens`, each input sequence may be split into multiple input rows.
+        offsets = result["offset_mapping"][batch_idx]
+
+        # This gets the original secondary structure sequence for the current chunk.
+        ss_sequence = example["Secondary_structure"][result["overflow_to_sample_mapping"][batch_idx]]
+
+        for offset_start, offset_end in offsets:
+            if offset_start == offset_end:
+                sequence_labels.append(-100)  # Start and end of the sequence tokens can be ignored.
+            elif offset_end == offset_start + 1:  # All tokens are single-character.
+                ss_char = ss_sequence[offset_start]
+                ss_label_value = ss_token_map[ss_char]  # Encode the secondary structure character
+                sequence_labels.append(ss_label_value)
+            else:
+                raise ValueError(f"Invalid offset: {offset_start} {offset_end}")
+
+        labels.append(sequence_labels)
+
+    return {"input_ids": result["input_ids"], "labels": labels}
 
 
 def create_dataloader(
@@ -123,36 +156,7 @@ def create_dataloader(
         "return_offsets_mapping": True,
     }
 
-    def tokenize(example):
-        """Tokenize both the input protein sequence and the secondary structure labels."""
-        result = tokenizer(example["Sequence"], **tokenize_args)
-
-        # While we can use the rust-based tokenizer for the protein sequence, we manually encode the secondary structure
-        # labels. Our goal is to return a list of integer labels with the same shape as the input_ids.
-        labels = []
-        for batch_idx in range(len(result["input_ids"])):
-            sequence_labels = []
-
-            # This array maps the possibly-chunked result["input_ids"] to the original sequence. Because of
-            # `return_overflowing_tokens`, each input sequence may be split into multiple input rows.
-            offsets = result["offset_mapping"][batch_idx]
-
-            # This gets the original secondary structure sequence for the current chunk.
-            ss_sequence = example["Secondary_structure"][result["overflow_to_sample_mapping"][batch_idx]]
-
-            for offset_start, offset_end in offsets:
-                if offset_start == offset_end:
-                    sequence_labels.append(-100)  # Start and end of the sequence tokens can be ignored.
-                elif offset_end == offset_start + 1:  # All tokens are single-character.
-                    ss_char = ss_sequence[offset_start]
-                    ss_label_value = ss_token_map[ss_char]  # Encode the secondary structure character
-                    sequence_labels.append(ss_label_value)
-                else:
-                    raise ValueError(f"Invalid offset: {offset_start} {offset_end}")
-
-            labels.append(sequence_labels)
-
-        return {"input_ids": result["input_ids"], "labels": labels}
+    tokenize = partial(tokenize_function, tokenizer=tokenizer, tokenize_args=tokenize_args, ss_token_map=ss_token_map)
 
     train_tokenized_dataset = train_dataset.map(
         tokenize,
@@ -191,6 +195,7 @@ def create_dataloader(
         batch_size=batch_size,
         collate_fn=collator,
         num_workers=num_workers,
+        multiprocessing_context="spawn" if num_workers > 0 else None,
         pin_memory=True,
     )
 
@@ -232,6 +237,7 @@ def create_dataloader(
             batch_size=val_batch_size,
             collate_fn=collator,
             num_workers=num_workers,
+            multiprocessing_context="spawn" if num_workers > 0 else None,
             pin_memory=True,
         )
     else:
