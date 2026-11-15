@@ -30,23 +30,24 @@ from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubm
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
-from megatron.core.transformer.mlp import MLP, MLPSubmodules
+from megatron.core.transformer.mlp import MLPSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
 from bionemo.evo2.models.megatron.hyena.hyena_block import HyenaStack, HyenaStackSubmodules
 from bionemo.evo2.models.megatron.hyena.hyena_layer import HyenaLayer, HyenaLayerSubmodules
 from bionemo.evo2.models.megatron.hyena.hyena_mixer import HyenaMixer, HyenaMixerSubmodules
+from bionemo.evo2.models.megatron.hyena.inference import HyenaMLP
 
 
 try:
     from megatron.core.extensions.transformer_engine import (
         TEDotProductAttention,
-        TELayerNormColumnParallelLinear,
         TENorm,
         TERowParallelLinear,
     )
 
+    from bionemo.evo2.models.megatron.hyena.inference_norm import HyenaNormLinear
     from bionemo.evo2.models.megatron.hyena.te_compat import (
         Linear,
         RMSNormLinear,
@@ -63,7 +64,7 @@ except ImportError:
 
     # NeMo has a number of tests that make sure that you can initialize some modules without TE installed.
     TENorm = _raise_te_import_error
-    TELayerNormColumnParallelLinear = _raise_te_import_error
+    HyenaNormLinear = _raise_te_import_error
     TERowParallelLinear = _raise_te_import_error
     TEDotProductAttention = _raise_te_import_error
 
@@ -77,7 +78,7 @@ def get_hyena_stack_spec(
     """Construct desired Hyena stack spec based on given parameters."""
     if use_te:
         row_linear = TERowParallelLinear
-        col_linear = TELayerNormColumnParallelLinear
+        col_linear = HyenaNormLinear
         pre_layernorm = IdentityOp  # fused Norm+Linear, so no pre norm
         core_attention = TEDotProductAttention
     else:
@@ -113,7 +114,7 @@ def get_hyena_stack_spec(
                     hyena_bda=get_bias_dropout_add,
                     pre_mlp_layernorm=pre_layernorm,
                     mlp=ModuleSpec(
-                        module=MLP,
+                        module=HyenaMLP,
                         submodules=MLPSubmodules(linear_fc1=col_linear, linear_fc2=row_linear),
                     ),
                     mlp_bda=get_bias_dropout_add,
@@ -135,7 +136,7 @@ def get_hyena_stack_spec(
                     self_attn_bda=get_bias_dropout_add,
                     pre_mlp_layernorm=pre_layernorm,
                     mlp=partial(
-                        MLP.as_mlp_submodule,
+                        HyenaMLP.as_mlp_submodule,
                         submodules=MLPSubmodules(linear_fc1=col_linear, linear_fc2=row_linear),
                     ),
                     mlp_bda=get_bias_dropout_add,

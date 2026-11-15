@@ -238,6 +238,7 @@ if TRITON_AVAILABLE:
     @triton.jit
     def _segmented_modal_from_projection_kernel(
         projection,
+        drive,
         diagonal,
         residues,
         decays,
@@ -245,6 +246,7 @@ if TRITON_AVAILABLE:
         selected_sequence_ids,
         output,
         final_state_out,
+        compact: tl.constexpr,
         channels: tl.constexpr,
         order: tl.constexpr,
         group_width: tl.constexpr,
@@ -276,11 +278,15 @@ if TRITON_AVAILABLE:
             sequence_end = sequence_end.to(tl.int64)
 
         for token in tl.range(sequence_start, sequence_end):
-            projection_base = token * (3 * channels) + 3 * channel
+            if compact:
+                projection_base = token * channels + channel
+                recurrent_input = tl.load(drive + projection_base, mask=valid_channel, other=0.0).to(tl.float32)
+            else:
+                projection_base = token * (3 * channels) + 3 * channel
+                x2 = tl.load(projection + projection_base + 1, mask=valid_channel, other=0.0).to(tl.float32)
+                value = tl.load(projection + projection_base + 2, mask=valid_channel, other=0.0).to(tl.float32)
+                recurrent_input = (x2 * value).to(tl.bfloat16).to(tl.float32)
             x1 = tl.load(projection + projection_base, mask=valid_channel, other=0.0).to(tl.float32)
-            x2 = tl.load(projection + projection_base + 1, mask=valid_channel, other=0.0).to(tl.float32)
-            value = tl.load(projection + projection_base + 2, mask=valid_channel, other=0.0).to(tl.float32)
-            recurrent_input = (x2 * value).to(tl.bfloat16).to(tl.float32)
             state = recurrent_input[:, None] + decay * state
             convolved = tl.sum(residue * state, axis=1)
             diagonal_value = tl.load(diagonal + channel, mask=valid_channel, other=0.0).to(tl.float32)
@@ -444,6 +450,7 @@ if TRITON_AVAILABLE:
     @triton.jit
     def _segmented_modal_chunk_summarize_kernel(
         projection,
+        drive,
         diagonal,
         residues,
         decays,
@@ -452,6 +459,7 @@ if TRITON_AVAILABLE:
         chunk_sequence_ids,
         output,
         chunk_states,
+        compact: tl.constexpr,
         channels: tl.constexpr,
         order: tl.constexpr,
         group_width: tl.constexpr,
@@ -490,10 +498,14 @@ if TRITON_AVAILABLE:
             chunk_end = chunk_end.to(tl.int64)
 
         for token in tl.range(chunk_start, chunk_end):
-            projection_base = token * (3 * channels) + 3 * channel
-            x2 = tl.load(projection + projection_base + 1, mask=valid_channel, other=0.0).to(tl.float32)
-            value = tl.load(projection + projection_base + 2, mask=valid_channel, other=0.0).to(tl.float32)
-            recurrent_input = (x2 * value).to(tl.bfloat16).to(tl.float32)
+            if compact:
+                projection_base = token * channels + channel
+                recurrent_input = tl.load(drive + projection_base, mask=valid_channel, other=0.0).to(tl.float32)
+            else:
+                projection_base = token * (3 * channels) + 3 * channel
+                x2 = tl.load(projection + projection_base + 1, mask=valid_channel, other=0.0).to(tl.float32)
+                value = tl.load(projection + projection_base + 2, mask=valid_channel, other=0.0).to(tl.float32)
+                recurrent_input = (x2 * value).to(tl.bfloat16).to(tl.float32)
             state = recurrent_input[:, None] + decay * state
             if is_first_chunk:
                 x1 = tl.load(projection + projection_base, mask=valid_channel, other=0.0).to(tl.float32)
@@ -553,6 +565,7 @@ if TRITON_AVAILABLE:
     @triton.jit
     def _segmented_modal_chunk_continue_kernel(
         projection,
+        drive,
         diagonal,
         residues,
         decays,
@@ -561,6 +574,7 @@ if TRITON_AVAILABLE:
         continuation_chunk_ids,
         output,
         chunk_states,
+        compact: tl.constexpr,
         channels: tl.constexpr,
         order: tl.constexpr,
         group_width: tl.constexpr,
@@ -589,11 +603,15 @@ if TRITON_AVAILABLE:
             chunk_end = chunk_end.to(tl.int64)
 
         for token in tl.range(chunk_start, chunk_end):
-            projection_base = token * (3 * channels) + 3 * channel
+            if compact:
+                projection_base = token * channels + channel
+                recurrent_input = tl.load(drive + projection_base, mask=valid_channel, other=0.0).to(tl.float32)
+            else:
+                projection_base = token * (3 * channels) + 3 * channel
+                x2 = tl.load(projection + projection_base + 1, mask=valid_channel, other=0.0).to(tl.float32)
+                value = tl.load(projection + projection_base + 2, mask=valid_channel, other=0.0).to(tl.float32)
+                recurrent_input = (x2 * value).to(tl.bfloat16).to(tl.float32)
             x1 = tl.load(projection + projection_base, mask=valid_channel, other=0.0).to(tl.float32)
-            x2 = tl.load(projection + projection_base + 1, mask=valid_channel, other=0.0).to(tl.float32)
-            value = tl.load(projection + projection_base + 2, mask=valid_channel, other=0.0).to(tl.float32)
-            recurrent_input = (x2 * value).to(tl.bfloat16).to(tl.float32)
             state = recurrent_input[:, None] + decay * state
             convolved = tl.sum(residue * state, axis=1)
             diagonal_value = tl.load(diagonal + channel, mask=valid_channel, other=0.0).to(tl.float32)
@@ -1033,7 +1051,7 @@ def segmented_fir_from_projection(
 
 
 def segmented_modal_from_projection(
-    projection: torch.Tensor,
+    projection: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
     diagonal: torch.Tensor,
     residues: torch.Tensor,
     poles: ModalPoles,
@@ -1051,15 +1069,35 @@ def segmented_modal_from_projection(
     argument) parallelizes long sequences without padding, sorting, or moving token
     rows. The compact FP32 chunk summaries are overwritten in-place with each
     chunk's initial carry before continuation chunks are evaluated.
+
+    A compact ``(gate, drive)`` pair consumes the gate as output storage. The
+    recurrence and chunk carries read only drive after a gate value is consumed.
     """
+    compact = isinstance(projection, tuple)
+    if compact:
+        projection, drive = projection
+        if (
+            torch.is_grad_enabled()
+            or projection.requires_grad
+            or drive.requires_grad
+            or projection.dtype != torch.bfloat16
+            or drive.dtype != projection.dtype
+            or drive.device != projection.device
+            or drive.shape != projection.shape
+            or not drive.is_contiguous()
+            or projection.untyped_storage().data_ptr() == drive.untyped_storage().data_ptr()
+        ):
+            raise ValueError("compact modal inputs must be disjoint contiguous BF16 inference buffers")
+    else:
+        drive = projection
     if not TRITON_AVAILABLE:
         raise RuntimeError("Triton is required for packed Hyena inference kernels")
     if projection.ndim != 2 or not projection.is_cuda or not projection.is_contiguous():
         raise ValueError("projection must be contiguous CUDA [T, 3C]")
     total_tokens, projected_channels = projection.shape
-    if projected_channels % 3 != 0:
+    if not compact and projected_channels % 3 != 0:
         raise ValueError("projection feature dimension must be divisible by three")
-    channels = projected_channels // 3
+    channels = projected_channels if compact else projected_channels // 3
     if diagonal.shape != (channels,):
         raise ValueError("diagonal must have one value per output channel")
     if residues.ndim != 2 or residues.shape[1] != 16:
@@ -1087,7 +1125,11 @@ def segmented_modal_from_projection(
     if chunk_size is not None:
         chunk_metadata = modal_chunk_metadata_from_cu_seqlens(cu_seqlens, chunk_size=chunk_size)
 
-    output = torch.empty((total_tokens, channels), dtype=projection.dtype, device=projection.device)
+    output = (
+        projection
+        if compact
+        else torch.empty((total_tokens, channels), dtype=projection.dtype, device=projection.device)
+    )
     final_state_argument = final_state_out if final_state_out is not None else output
     use_64bit_indexing = _requires_64bit_indexing(
         projection.numel(),
@@ -1129,6 +1171,7 @@ def segmented_modal_from_projection(
             unchunked_grid = (unchunked_sequence_count, triton.cdiv(channels, block_channels))
             _segmented_modal_from_projection_kernel[unchunked_grid](
                 projection,
+                drive,
                 diagonal,
                 residues,
                 poles.decay,
@@ -1136,6 +1179,7 @@ def segmented_modal_from_projection(
                 chunk_metadata.unchunked_sequence_ids,
                 output,
                 final_state_argument,
+                compact=compact,
                 channels=channels,
                 order=16,
                 group_width=group_width,
@@ -1158,6 +1202,7 @@ def segmented_modal_from_projection(
             chunk_grid = (total_chunks, triton.cdiv(channels, block_channels))
             _segmented_modal_chunk_summarize_kernel[chunk_grid](
                 projection,
+                drive,
                 diagonal,
                 residues,
                 poles.decay,
@@ -1166,6 +1211,7 @@ def segmented_modal_from_projection(
                 chunk_metadata.chunk_sequence_ids,
                 output,
                 chunk_states,
+                compact=compact,
                 channels=channels,
                 order=16,
                 group_width=group_width,
@@ -1195,6 +1241,7 @@ def segmented_modal_from_projection(
             continuation_grid = (continuation_count, triton.cdiv(channels, block_channels))
             _segmented_modal_chunk_continue_kernel[continuation_grid](
                 projection,
+                drive,
                 diagonal,
                 residues,
                 poles.decay,
@@ -1203,6 +1250,7 @@ def segmented_modal_from_projection(
                 chunk_metadata.continuation_chunk_ids,
                 output,
                 chunk_states,
+                compact=compact,
                 channels=channels,
                 order=16,
                 group_width=group_width,
@@ -1215,6 +1263,7 @@ def segmented_modal_from_projection(
     grid = (sequence_count, triton.cdiv(channels, block_channels))
     _segmented_modal_from_projection_kernel[grid](
         projection,
+        drive,
         diagonal,
         residues,
         poles.decay,
@@ -1222,6 +1271,7 @@ def segmented_modal_from_projection(
         cu_seqlens,
         output,
         final_state_argument,
+        compact=compact,
         channels=channels,
         order=16,
         group_width=group_width,

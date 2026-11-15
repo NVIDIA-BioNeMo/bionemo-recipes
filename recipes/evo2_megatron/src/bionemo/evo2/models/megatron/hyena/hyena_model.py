@@ -354,7 +354,9 @@ class HyenaModel(LanguageModule):
         # Wrap decoder_input to allow the decoder (TransformerBlock) to delete the
         # reference held by this caller function, enabling early garbage collection for
         # inference. Skip wrapping if decoder_input is logged after decoder completion.
-        if in_inference_mode and not has_config_logger_enabled(self.config):
+        if (
+            in_inference_mode or (not self.training and not torch.is_grad_enabled())
+        ) and not has_config_logger_enabled(self.config):
             decoder_input = WrappedTensor(decoder_input)
 
         return decoder_input, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin, sequence_len_offset

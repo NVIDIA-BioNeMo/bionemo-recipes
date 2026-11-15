@@ -75,6 +75,7 @@ exclude = ["test*."]
 version = { file = "VERSION" }
 
 [tool.setuptools.package-data]
+"bionemo.evo2.models.megatron.hyena" = ["inference.cu"]
 "bionemo.common.data" = ["resources/*.yaml"]
 
 # ------------------------------------------------------------------
