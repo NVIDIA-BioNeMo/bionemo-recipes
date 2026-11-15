@@ -180,7 +180,7 @@ def get_tp_reference_hyena_stack_spec(
     with (
         patch.object(
             hyena_layer_specs,
-            "TELayerNormColumnParallelLinear",
+            "HyenaNormLinear",
             TpReferenceLayerNormColumnParallelLinear,
         ),
         patch.object(hyena_layer_specs, "TERowParallelLinear", TpReferenceRowParallelLinear),

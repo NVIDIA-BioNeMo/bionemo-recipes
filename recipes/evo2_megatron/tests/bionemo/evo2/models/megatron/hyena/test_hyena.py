@@ -26,13 +26,13 @@ from megatron.bridge.training.config import OptimizerConfig, OptimizerConfigOver
 from megatron.core.inference.utils import InferenceMode
 from megatron.core.optimizer import _get_param_groups, get_standard_config_overrides
 from megatron.core.transformer.enums import CudaGraphScope, InferenceCudaGraphScope
-from megatron.core.transformer.mlp import MLP
 from megatron.core.utils import WrappedTensor
 
 from bionemo.evo2.models.evo2_provider import HyenaNVTestModelProvider, HyenaOptimizerConfigOverrideProvider
 from bionemo.evo2.models.megatron.hyena.hyena_block import HyenaStack
 from bionemo.evo2.models.megatron.hyena.hyena_layer import HyenaLayer
 from bionemo.evo2.models.megatron.hyena.hyena_model import HyenaModel, _static_sequence_len_offset
+from bionemo.evo2.models.megatron.hyena.inference import HyenaMLP
 
 from .tp_reference import (
     get_tp_reference_hyena_stack_spec,
@@ -466,7 +466,7 @@ def test_tp_reference_stack_uses_test_only_fp32_linears():
     attention_submodules = spec.submodules.attention_layer.submodules
     attention_mlp = attention_submodules.mlp
     assert isinstance(attention_mlp, partial)
-    assert attention_mlp.func == MLP.as_mlp_submodule
+    assert attention_mlp.func == HyenaMLP.as_mlp_submodule
     attention_mlp_submodules = attention_mlp.keywords["submodules"]
     row_linear_modules = (
         hyena_submodules.mixer.submodules.dense,

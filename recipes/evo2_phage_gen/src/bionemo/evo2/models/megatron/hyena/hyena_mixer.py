@@ -914,18 +914,50 @@ class HyenaMixer(MegatronModule):
             flat_projection = flat_projection.contiguous()
 
         projection_weight, projection_group_width = _packed_fir_weight(self.hyena_proj_conv)
-        projection_fir = segmented_causal_conv1d(
-            flat_projection,
-            projection_weight,
-            sequence_ids,
-            group_width=projection_group_width,
+        fused = (
+            inference_context is None
+            and not self.training
+            and not torch.is_grad_enabled()
+            and self.hyena_proj_conv.kernel_size == 3
+            and (
+                self.operator_type == "hyena"
+                or (self.operator_type == "hyena_medium_conv" and self.mixer.hyena_medium_conv_len == 128)
+                or (
+                    self.operator_type == "hyena_short_conv"
+                    and self.mixer.short_conv.kernel_size == 7
+                    and self.mixer.pregate
+                    and self.mixer.postgate
+                )
+            )
         )
+        if fused:
+            from bionemo.evo2.models.megatron.hyena.inference import kernels
+
+            extension = kernels()
+        else:
+            projection_fir = segmented_causal_conv1d(
+                flat_projection,
+                projection_weight,
+                sequence_ids,
+                group_width=projection_group_width,
+            )
 
         if self.operator_type == "hyena_short_conv":
             mixer_weight, group_width = _packed_fir_weight(self.mixer.short_conv)
             diagonal = None
             if self.mixer.use_conv_bias:
                 diagonal = self.mixer.conv_bias.repeat_interleave(self.mixer.group_dim).contiguous()
+            if fused:
+                return extension.fused_fir(
+                    flat_projection,
+                    projection_weight,
+                    mixer_weight,
+                    diagonal,
+                    sequence_ids,
+                    local_positions,
+                    projection_group_width,
+                    group_width,
+                )
             output = segmented_fir_from_projection(
                 projection_fir,
                 mixer_weight,
@@ -941,6 +973,17 @@ class HyenaMixer(MegatronModule):
             if isinstance(mixer_weight, tuple):
                 mixer_weight = mixer_weight[0]
             mixer_weight = mixer_weight.squeeze(0).contiguous()
+            if fused:
+                return extension.fused_fir(
+                    flat_projection,
+                    projection_weight,
+                    mixer_weight,
+                    self.mixer.conv_bias.contiguous(),
+                    sequence_ids,
+                    local_positions,
+                    projection_group_width,
+                    self.mixer.group_dim,
+                )
             output = segmented_fir_from_projection(
                 projection_fir,
                 mixer_weight,
@@ -950,6 +993,15 @@ class HyenaMixer(MegatronModule):
                 diagonal=self.mixer.conv_bias.contiguous(),
             )
         else:
+            if fused:
+                projection_fir = tuple(
+                    extension.compact_projection(
+                        flat_projection,
+                        projection_weight,
+                        sequence_ids,
+                        projection_group_width,
+                    )
+                )
             final_state = None
             if inference_context is not None:
                 final_state = torch.empty(

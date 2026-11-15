@@ -227,14 +227,30 @@ def apply_preindexed_fused_rope_thd(
     cp_rank: int = 0,
     interleaved: bool = False,
 ) -> Tensor:
-    """Apply token-preindexed cosine/sine with a stride-safe flat Triton kernel.
+    """Apply preindexed THD rotary frequencies with stride-safe, 64-bit offsets.
 
-    Transformer Engine's THD kernel reconstructs local positions from ``cu_seqlens``
-    on every attention layer. Its 26.07 implementation also overflows 32-bit offsets
-    for sufficiently long strided Q/K views. Preindexing once lets this kernel use
-    64-bit token offsets when required, with no per-layer boundary lookup or copy.
+    The eligible BF16 inference path consumes the token view in place. Autograd
+    and unsupported layouts retain the native out-of-place operation.
     """
     if frequencies.shape[0] == tokens.shape[0] and frequencies.shape[-2] == 2:
+        if (
+            not torch.is_grad_enabled()
+            and not tokens.requires_grad
+            and not frequencies.requires_grad
+            and tokens.ndim == 3
+            and tokens.is_cuda
+            and torch.bfloat16 == tokens.dtype
+            and frequencies.dtype in (torch.bfloat16, torch.float32)
+            and cp_size == 1
+            and cp_rank == 0
+            and tokens.stride(2) == 1
+            and tokens.stride(1) >= tokens.shape[2]
+            and tokens.stride(0) >= (tokens.shape[1] - 1) * tokens.stride(1) + tokens.shape[2]
+            and tokens.untyped_storage().data_ptr() != frequencies.untyped_storage().data_ptr()
+        ):
+            from bionemo.evo2.models.megatron.hyena.inference import kernels
+
+            return kernels().inplace_rope(tokens, frequencies, interleaved)
         return _PackedRoPE.apply(tokens, frequencies, interleaved)
 
     if _ORIGINAL_FUSED_THD is None:
