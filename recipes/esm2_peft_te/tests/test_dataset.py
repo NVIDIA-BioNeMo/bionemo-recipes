@@ -45,3 +45,37 @@ def test_dataloader_workers_use_spawn(recipe_path, use_sequence_packing):
 
     batch = next(iter(train_dataloader))
     assert batch["input_ids"].shape == batch["labels"].shape
+
+
+@pytest.mark.parametrize("use_sequence_packing", [False, True])
+@pytest.mark.parametrize("val_micro_batch_size", [1, 3])
+def test_validation_batch_size(recipe_path, tmp_path, use_sequence_packing, val_micro_batch_size):
+    """Validation must use its own batch size in both padded and packed formats."""
+    from datasets import Dataset
+
+    # Six residues plus the tokenizer's CLS and EOS fill an eight-token sample.
+    data_file = tmp_path / "sequences.parquet"
+    Dataset.from_dict({"Sequence": ["AAAAAA"] * 12, "Secondary_structure": ["HHHHHH"] * 12}).to_parquet(data_file)
+    train_dataloader, val_dataloader, _ = create_dataloader(
+        distributed_config=DistributedConfig(),
+        use_sequence_packing=use_sequence_packing,
+        tokenizer_name=str(recipe_path / "example_8m_checkpoint"),
+        micro_batch_size=2,
+        val_micro_batch_size=val_micro_batch_size,
+        num_workers=0,
+        max_seq_length=8,
+        stride=0,
+        seed=42,
+        ss3_classification=True,
+        load_dataset_kwargs={
+            "path": "parquet",
+            "data_files": {"train": str(data_file), "validation": str(data_file)},
+            "streaming": True,
+        },
+    )
+
+    train_batch = next(iter(train_dataloader))
+    val_batch = next(iter(val_dataloader))
+    assert train_batch["input_ids"].numel() == 2 * 8
+    assert val_batch["input_ids"].numel() == val_micro_batch_size * 8
+    assert val_batch["input_ids"].shape == val_batch["labels"].shape
