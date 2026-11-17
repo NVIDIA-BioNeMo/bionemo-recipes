@@ -80,6 +80,54 @@ def test_preprocessing_context_without_seed_advances_current_random_state() -> N
         assert random.getstate() != initial_state
 
 
+@pytest.mark.parametrize("split", ["train", "val", "test"])
+@pytest.mark.parametrize("extension", [".bin", ".idx"])
+def test_overwrite_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, split: str, extension: str) -> None:
+    """Every final output must prevent builder construction when overwriting is disabled."""
+    fasta = create_fasta_file(tmp_path / "input.fasta", num_sequences=3, sequence_length=20)
+    output = tmp_path / "outputs"
+    output.mkdir()
+    config = create_preprocessing_config(output, fasta)
+    config.overwrite = False
+    preprocessor = Evo2Preprocessor(config)
+    existing = preprocessor._get_output_filename(config, extension, split)
+    existing.write_bytes(b"existing dataset bytes\x00\xff")
+    before = {path.name: path.read_bytes() for path in output.iterdir()}
+
+    def unexpected_builder(*args, **kwargs):
+        pytest.fail("An indexed dataset builder was constructed despite an existing output")
+
+    monkeypatch.setattr("bionemo.evo2.data.preprocess.IndexedDatasetBuilder", unexpected_builder)
+    preprocessor.preprocess_offline(config)
+    assert {path.name: path.read_bytes() for path in output.iterdir()} == before
+
+
+@pytest.mark.parametrize(
+    "overwrite,existing_outputs", [(False, "empty"), (True, "empty"), (True, "partial"), (True, "complete")]
+)
+def test_overwrite_controls(tmp_path: Path, overwrite: bool, existing_outputs: str) -> None:
+    """Real builders create complete datasets in empty or explicitly overwritten directories."""
+    fasta = create_fasta_file(tmp_path / "input.fasta", num_sequences=6, sequence_length=20)
+    output = tmp_path / "outputs"
+    output.mkdir()
+    config = create_preprocessing_config(output, fasta)
+    config.overwrite = overwrite
+    preprocessor = Evo2Preprocessor(config)
+    outputs = [
+        preprocessor._get_output_filename(config, ext, split)
+        for ext in [".bin", ".idx"]
+        for split in ["train", "val", "test"]
+    ]
+    for path in outputs[:1] if existing_outputs == "partial" else outputs if existing_outputs == "complete" else []:
+        path.write_bytes(b"stale dataset")
+    preprocessor.preprocess_offline(config)
+    assert set(output.iterdir()) == set(outputs)
+    for split in ["train", "val", "test"]:
+        prefix = preprocessor._get_output_filename(config, split=split)
+        dataset = IndexedDataset(str(prefix))
+        assert len(dataset) > 0
+
+
 @pytest.mark.parametrize("mask_phylogenetic_tags", [True, False])
 def test_preprocessor_creates_expected_files(tmp_path: Path, mask_phylogenetic_tags: bool) -> None:
     """Verifies that preprocessing creates all expected output files."""
