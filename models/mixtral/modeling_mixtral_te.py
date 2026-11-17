@@ -288,7 +288,7 @@ def _fused_grouped_mlp_registration():
     from transformer_engine.pytorch.ops.fuser import OperationFuser
 
     try:
-        from transformer_engine.pytorch.ops.fused.grouped_mlp import GroupedMLP_CuTeGEMMGLU, fuse_ops
+        import transformer_engine.pytorch.ops.fused.grouped_mlp as te_grouped_mlp
     except ModuleNotFoundError as error:
         # TE 2.17 replaced the forward-only implementation with a unified forward/backward op.
         # Fall back only when that module itself is absent; do not hide missing dependencies or
@@ -310,8 +310,11 @@ def _fused_grouped_mlp_registration():
 
     from transformer_engine.pytorch.ops.fuser import register_forward_backward_fusion
 
+    # TE 2.20 renamed the GLU fusion function from ``fuse_ops`` to ``fuse_glu_ops``.
+    fuse_ops = getattr(te_grouped_mlp, "fuse_glu_ops", None) or te_grouped_mlp.fuse_ops
+
     return (
-        GroupedMLP_CuTeGEMMGLU,
+        te_grouped_mlp.GroupedMLP_CuTeGEMMGLU,
         fuse_ops,
         OperationFuser.forward_backward_fusion_functions,
         register_forward_backward_fusion,
