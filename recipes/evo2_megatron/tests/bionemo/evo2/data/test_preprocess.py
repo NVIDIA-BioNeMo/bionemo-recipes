@@ -17,7 +17,10 @@
 # limitations under the License.
 
 
+import os
 import random
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +81,76 @@ def test_preprocessing_context_without_seed_advances_current_random_state() -> N
         with Evo2Preprocessor.preprocessing_context_manager():
             random.random()
         assert random.getstate() != initial_state
+
+
+def test_record_rng_isolation(tmp_path: Path) -> None:
+    """Seeded record augmentation restores caller state and responds to the application seed."""
+    config = create_preprocessing_config(tmp_path, tmp_path / "input.fasta")
+    config.embed_reverse_complement = False
+    config.random_reverse_complement = 0.5
+    preprocessor = Evo2Preprocessor(config)
+    before = random.getstate()
+    first = [preprocessor.preprocess_data("input.fasta", "record", "AAAACCGT", i, config)[0] for i in range(32)]
+    assert random.getstate() == before
+    config.seed += 1
+    second = [preprocessor.preprocess_data("input.fasta", "record", "AAAACCGT", i, config)[0] for i in range(32)]
+    assert random.getstate() == before
+    assert first != second
+
+
+def test_record_hash_seed_parity() -> None:
+    """Fifty actual preprocessing interpreters must agree on seeded augmentation tokens."""
+    script = r"""
+import hashlib
+import json
+from bionemo.evo2.data.preprocess import Evo2Preprocessor
+from bionemo.evo2.utils.config import Evo2PreprocessingConfig, Evo2TaxonomyLineage
+config = Evo2PreprocessingConfig(
+    seed=42, random_reverse_complement=0.5, random_lineage_dropout=0.5,
+    taxonomy_data={"record": Evo2TaxonomyLineage(domain="Bacteria", phylum="test", species="fixture")},
+)
+preprocessor = Evo2Preprocessor(config)
+records = [preprocessor.preprocess_data("/fixture/input_μ.fasta", "record", "AAAACCGT", i, config)[0]
+           for i in range(20)]
+print(hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest())
+"""
+    digests = []
+    for hash_seed in [0, 1, 2, 3, 42]:
+        for _ in range(10):
+            output = subprocess.check_output(
+                [sys.executable, "-c", script],
+                env={**os.environ, "PYTHONHASHSEED": str(hash_seed)},
+                text=True,
+                timeout=120,
+            )
+            digests.append(output.splitlines()[-1])
+    assert len(set(digests)) == 1
+
+
+def test_record_non_utf8_path(tmp_path: Path) -> None:
+    """Path identities support Python's surrogate-escaped filesystem names."""
+    config = create_preprocessing_config(tmp_path, tmp_path / "input.fasta")
+    preprocessor = Evo2Preprocessor(config)
+    records, _ = preprocessor.preprocess_data(os.fsdecode(b"input_\xff.fasta"), "record", "AAAACCGT", 0, config)
+    assert records
+
+
+def test_preprocessing_worker_parity(tmp_path: Path) -> None:
+    """One and two workers produce the same augmented records and split membership."""
+    fasta = tmp_path / "input.fasta"
+    fasta.write_text("".join(f">record{i}\nAAAACCGT\n" for i in range(20)))
+    config = create_preprocessing_config(tmp_path, fasta)
+    config.embed_reverse_complement = False
+    config.random_reverse_complement = 0.5
+    config.chunksize = 1
+    preprocessor = Evo2Preprocessor(config)
+    before = random.getstate()
+    single = [record for record, _ in preprocessor.preprocess_generator(config)]
+    assert random.getstate() == before
+    config.workers = 2
+    parallel = [record for record, _ in preprocessor.preprocess_generator(config)]
+    assert random.getstate() == before
+    assert single == parallel
 
 
 @pytest.mark.parametrize("mask_phylogenetic_tags", [True, False])

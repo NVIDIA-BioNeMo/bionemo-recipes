@@ -246,6 +246,22 @@ The config YAML specifies input FASTA paths, output directory, train/val/test sp
 tokenizer settings, and preprocessing options. See the `fine-tuning-tutorial.ipynb`
 notebook in `examples/` for a complete example.
 
+Seeded per-record augmentation uses the first eight bytes of the SHA-256 digest
+of the exact input path string encoded as UTF-8 with `surrogatepass`, interpreted as a big-endian integer, plus
+the configured seed and the zero-based record index. This replaces Python's
+interpreter-dependent path hash. Reverse-complement choices and lineage dropout
+therefore repeat for the same seed, path spelling and record order across
+`PYTHONHASHSEED` settings and worker counts. Moving or renaming an input, changing
+its path spelling, or reordering its records changes this identity.
+
+This changes augmented dataset contents relative to earlier releases, including
+runs that happened to use a fixed `PYTHONHASHSEED`. Keep existing datasets and
+their manifests for reproducibility; generate a separately named dataset when
+adopting the new seed policy and record the preprocessing version and input
+paths. This per-record policy does not change the split-assignment algorithm;
+complete dataset reproducibility also requires deterministic initial split
+ordering (tracked in [PR #1229](https://github.com/NVIDIA-BioNeMo/bionemo-recipes/pull/1229)).
+
 ### Transcript extraction (`splice_evo2`)
 
 Extract spliced transcripts from a genome FASTA and GTF annotation:
