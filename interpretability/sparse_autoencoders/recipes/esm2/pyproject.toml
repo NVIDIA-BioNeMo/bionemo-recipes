@@ -58,9 +58,5 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[project.scripts]
-esm2-sae-train = "esm2_sae.scripts.train:main"
-esm2-sae-viz = "esm2_sae.viz.cli:main"
-
 [tool.uv.sources]
 sae = { workspace = true }
