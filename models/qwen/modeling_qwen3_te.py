@@ -83,7 +83,7 @@ class NVQwen3PreTrainedModel(PreTrainedModel):
     config_class = NVQwen3Config
     base_model_prefix = "model"
     _no_split_modules = ("TransformerLayer",)
-    _skip_keys_device_placement = ("past_key_values",)
+    _skip_keys_device_placement = ("past_key_values", "cache")
 
     def init_empty_weights(self):
         """Handles moving the model from the meta device to the cuda device and initializing the weights."""
@@ -438,6 +438,7 @@ class NVQwen3ForCausalLM(NVQwen3PreTrainedModel, transformers.GenerationMixin):
         use_cache: bool | None = None,
         cache_position: torch.Tensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
+        cache: InferenceParams | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         """Forward pass for the NVQwen3ForCausalLM model.
@@ -456,11 +457,16 @@ class NVQwen3ForCausalLM(NVQwen3PreTrainedModel, transformers.GenerationMixin):
             cache_position (torch.Tensor): The cache position.
             logits_to_keep (int | torch.Tensor): Whether to keep only the last logits to reduce the memory footprint of
                 the model during generation.
+            cache (InferenceParams): Alias for `past_key_values`, passed by transformers>=5.24 generate().
             **kwargs: Additional keyword arguments.
 
         Returns:
             CausalLMOutputWithPast: The output of the model.
         """
+        # transformers>=5.24 renamed `past_key_values` to `cache` in generate().
+        if past_key_values is None:
+            past_key_values = cache
+
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -593,3 +599,11 @@ class HFInferenceParams(InferenceParams):
     def is_compileable(self) -> bool:
         """Return False as this cache is not compatible with torch.compile."""
         return False
+
+    @property
+    def is_linear(self) -> list[bool]:
+        """Return False for every layer, as TE caches keys/values for standard (non-linear) attention.
+
+        Required by HuggingFace transformers>=5.24 generate() to decide whether to slice already-cached inputs.
+        """
+        return [False]
