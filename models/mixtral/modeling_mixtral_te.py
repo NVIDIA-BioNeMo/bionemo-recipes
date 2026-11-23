@@ -1048,6 +1048,17 @@ class NVMixtralForCausalLM(NVMixtralPreTrainedModel, transformers.GenerationMixi
 
         self.post_init()
 
+    def _prepare_cache_for_generation(self, generation_config, model_kwargs, *args, **kwargs):
+        """Disable KV caching in generate() unless an explicit TE `InferenceParams` cache is passed.
+
+        TE attention cannot use the `DynamicCache` that generate() would otherwise create, and generate() only feeds
+        the newest token when `use_cache=True`, so without a TE cache each step must recompute the full sequence.
+        """
+        cache = model_kwargs.get("cache", model_kwargs.get("past_key_values"))
+        if not isinstance(cache, InferenceParams):
+            generation_config.use_cache = False
+        return super()._prepare_cache_for_generation(generation_config, model_kwargs, *args, **kwargs)
+
     def forward(
         self,
         input_ids: torch.Tensor | None = None,

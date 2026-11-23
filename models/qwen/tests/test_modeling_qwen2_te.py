@@ -173,3 +173,52 @@ class TestQwen2Model(BaseModelTest):
         for layer_number in range(1, config.num_hidden_layers + 1):
             past_key_values.allocate_memory(layer_number)
         return past_key_values
+
+    def test_generate_default_cache(self):
+        """generate() without an explicit cache must not hand its default DynamicCache to TE attention."""
+        config = self.create_test_config(attn_input_format="thd", self_attn_mask_type="padding_causal")
+        model = self.get_model_class()(config).to("cuda")
+        model.eval()
+
+        tokenizer = self.get_tokenizer()
+        inputs = tokenizer("The quick brown fox jumps over", return_tensors="pt")
+        inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+        with torch.no_grad():
+            default_ids = model.generate(**inputs, max_new_tokens=8, do_sample=False)
+            no_cache_ids = model.generate(**inputs, max_new_tokens=8, do_sample=False, use_cache=False)
+
+        torch.testing.assert_close(default_ids, no_cache_ids, rtol=0, atol=0)
+
+    def test_generate_cached_logits(self):
+        """Logits from KV-cached generation match a full forward pass over the generated sequence."""
+        config = self.create_test_config(attn_input_format="thd", self_attn_mask_type="padding_causal")
+        model = self.get_model_class()(config).to("cuda")
+        model.eval()
+
+        tokenizer = self.get_tokenizer()
+        inputs = tokenizer("The quick brown fox jumps over", return_tensors="pt")
+        inputs = {k: v.to("cuda") for k, v in inputs.items()}
+        prompt_len = inputs["input_ids"].shape[1]
+
+        with torch.no_grad():
+            out = model.generate(
+                **inputs,
+                max_new_tokens=8,
+                do_sample=False,
+                use_cache=True,
+                past_key_values=self.create_inference_params(config, batch_size=1),
+                output_logits=True,
+                return_dict_in_generate=True,
+            )
+            cached_logits = torch.stack(out.logits, dim=1)
+            full_logits = model(input_ids=out.sequences, attention_mask=torch.ones_like(out.sequences)).logits
+            full_logits = full_logits.view(1, out.sequences.shape[1], -1)[:, prompt_len - 1 : -1]
+
+        tolerances = self.get_tolerances()
+        torch.testing.assert_close(
+            cached_logits.float(),
+            full_logits.float(),
+            atol=tolerances.golden_value_logits_atol,
+            rtol=tolerances.golden_value_logits_rtol,
+        )
