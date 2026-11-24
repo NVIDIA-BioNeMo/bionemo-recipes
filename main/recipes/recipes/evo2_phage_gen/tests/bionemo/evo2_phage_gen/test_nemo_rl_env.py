@@ -1,0 +1,1459 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Apache2
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for ``bionemo.evo2_phage_gen.nemo_rl_env`` helpers."""
+
+import copy
+import json
+import math
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+import torch
+import yaml
+
+import bionemo.evo2_phage_gen.nemo_rl_env as nemo_rl_env
+from bionemo.evo2_phage_gen.design_scope import HostDomain, HostEvidence
+from bionemo.evo2_phage_gen.nemo_rl_env import (
+    TIMING_METRIC_MARKER_PREFIX,
+    GDPOObjective,
+    _scored_records,
+    extract_assistant_sequence,
+    extract_scored_sequence,
+    gdpo_objective_scores_from_scored,
+    phage_qc_metrics_from_scored,
+    score_message_logs,
+)
+from bionemo.evo2_phage_gen.qc import NucleotideQCConfig
+from bionemo.evo2_phage_gen.reward import TIMING_COLUMN_PREFIX, RewardWeights, SequenceSafetyRewardConfig
+
+
+def _sequence_safety_mapping(tmp_path: Path) -> dict[str, object]:
+    """Return one strictly typed prokaryotic sequence-safety config mapping."""
+    return {
+        "enabled": True,
+        "host_domain": "BACTERIA",
+        "host_evidence": {
+            "source": "test-curation",
+            "source_version": "v1",
+            "replication_host_domains": ["BACTERIA"],
+            "confirmed": True,
+            "metadata": {"record_id": "NC_001422.1"},
+        },
+        "asset_manifest_path": str(tmp_path / "asset_manifest.yaml"),
+        "diamond_bin": str(tmp_path / "diamond"),
+        "mmseqs_bin": str(tmp_path / "mmseqs"),
+        "policy_path": str(tmp_path / "policy.yaml"),
+        "work_dir": str(tmp_path / "work"),
+        "strict_lysis": False,
+        "circular": True,
+        "threads": 2,
+        "batch_size": 5,
+        "orf_workers": 3,
+        "phrogs_threads": 7,
+        "timeout_seconds": 30.0,
+    }
+
+
+def _disabled_sequence_safety_config(tmp_path: Path) -> SequenceSafetyRewardConfig:
+    """Build a valid disabled config for dependency-free INDETERMINATE scoring."""
+    return SequenceSafetyRewardConfig(
+        host_domain=HostDomain.BACTERIA,
+        host_evidence=HostEvidence(
+            source="test-curation",
+            source_version="v1",
+            replication_host_domains=frozenset({HostDomain.BACTERIA}),
+            confirmed=True,
+            metadata={"record_id": "NC_001422.1"},
+        ),
+        asset_manifest_path=tmp_path / "asset_manifest.yaml",
+        diamond_bin=tmp_path / "diamond",
+        mmseqs_bin=tmp_path / "mmseqs",
+        policy_path=tmp_path / "policy.yaml",
+        work_dir=tmp_path / "work",
+        enabled=False,
+    )
+
+
+def _new_step_environment(
+    *,
+    reward_output_mode: str,
+    gdpo_objectives: tuple[GDPOObjective, ...],
+) -> tuple[type, object]:
+    """Construct the minimally initialized Ray actor used by step tests."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.config = object()
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env.external_qc = object()
+    env.mmseqs_cluster_diversity = object()
+    env.sequence_safety = object()
+    env.reward_output_mode = reward_output_mode
+    env.gdpo_objectives = gdpo_objectives
+    env.zero_reward_without_eod = False
+    return env_cls, env
+
+
+def test_phage_qc_actor_serializes_already_batched_calls():
+    """Avoid a redundant Ray thread pool and its per-thread allocator arenas."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    assert nemo_rl_env.PhageQCEnvironment._default_options["max_concurrency"] == 1
+
+
+def test_phage_qc_actor_keeps_cpu_scoring_off_policy_gpus():
+    """A CPU-reserved QC actor must not retain model state on a policy GPU."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_vars = nemo_rl_env.PhageQCEnvironment._default_options["runtime_env"]["env_vars"]
+
+    assert env_vars["PHAGEHOSTLEARN_ESM_DEVICE"] == "cpu"
+    assert env_vars["PHAGEHOSTLEARN_CUDA_VISIBLE_DEVICES"] == ""
+    assert env_vars["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_extract_assistant_sequence_concatenates_assistant_messages():
+    """Only assistant messages should contribute to generated DNA."""
+    message_log = [
+        {"role": "user", "content": "prompt"},
+        {"role": "assistant", "content": "ACGT"},
+        {"role": "environment", "content": "ignored"},
+        {"role": "assistant", "content": "TGCA"},
+    ]
+
+    assert extract_assistant_sequence(message_log) == "ACGTTGCA"
+
+
+def test_extract_scored_sequence_keeps_prompt_dna_and_trims_terminal_eos():
+    """QC should drop prompt soft tokens and the generated terminal action."""
+    message_log = [
+        {"role": "user", "content": "+~GAGT"},
+        {"role": "assistant", "content": "ACGT<EOS>NOT_DNA"},
+    ]
+
+    assert extract_scored_sequence(message_log) == "GAGTACGT"
+
+
+def test_score_message_logs_sends_only_pre_eos_dna_to_qc(monkeypatch):
+    """Terminal EOS remains an RL action but must not enter biological scoring."""
+    captured = {}
+
+    def _capture_sequences(sequences_df, **_kwargs):
+        captured["sequences"] = sequences_df.copy()
+        return sequences_df
+
+    monkeypatch.setattr(nemo_rl_env, "score_sequences", _capture_sequences)
+
+    scored = score_message_logs(
+        [[{"role": "user", "content": "+~GAGT"}, {"role": "assistant", "content": "ACGT<EOD>junk"}]]
+    )
+
+    assert captured["sequences"]["sequence"].tolist() == ["GAGTACGT"]
+    assert scored["sequence"].tolist() == ["GAGTACGT"]
+
+
+def test_score_message_logs_without_safety_config_returns_zero_reward():
+    """A historically passing sequence remains ineligible when safety is not configured."""
+    scored = score_message_logs(
+        [[{"role": "user", "content": "+~GAGT"}, {"role": "assistant", "content": "ACGT" * 1000}]]
+    )
+
+    assert scored["reward"].tolist() == [0.0]
+    assert scored["safety_gate_state"].tolist() == ["INDETERMINATE"]
+    assert scored["safety_gate_reason_codes"].tolist() == ['["SEQUENCE_SAFETY_CONFIG_MISSING"]']
+    assert scored["prompt_nt_length"].tolist() == [4]
+
+
+def test_score_message_logs_forwards_safety_config(tmp_path: Path):
+    """GRPO scoring forwards the safety config and reports unavailable safety explicitly."""
+    safety_config = _disabled_sequence_safety_config(tmp_path)
+
+    scored = score_message_logs(
+        [[{"role": "user", "content": "+~GAGT"}, {"role": "assistant", "content": "ACGT" * 1000}]],
+        sequence_safety=safety_config,
+    )
+
+    assert scored["reward"].tolist() == [0.0]
+    assert scored["safety_gate_state"].tolist() == ["INDETERMINATE"]
+    assert scored["safety_gate_reason_codes"].tolist() == ['["SEQUENCE_SAFETY_DISABLED"]']
+
+
+def test_sequence_safety_mapping_is_parsed_without_bool_or_host_scope_coercion(tmp_path: Path):
+    """Environment config parsing must produce typed Task 6 safety settings."""
+    raw = _sequence_safety_mapping(tmp_path)
+
+    parsed = nemo_rl_env._coerce_sequence_safety_config(raw)
+
+    assert type(parsed) is SequenceSafetyRewardConfig
+    assert parsed.host_domain is HostDomain.BACTERIA
+    assert parsed.host_evidence.to_dict() == raw["host_evidence"]
+    assert parsed.enabled is True
+    assert parsed.strict_lysis is False
+    assert parsed.circular is True
+    assert parsed.batch_size == 5
+    assert parsed.orf_workers == 3
+    assert parsed.phrogs_threads == 7
+    assert parsed.asset_manifest_path == tmp_path / "asset_manifest.yaml"
+
+    additive = copy.deepcopy(raw)
+    additive["notes"] = "recorded by a newer config writer"
+    additive["host_evidence"]["curator"] = "lab notebook"
+    assert nemo_rl_env._coerce_sequence_safety_config(additive) == parsed
+
+    string_bool = copy.deepcopy(raw)
+    string_bool["enabled"] = "false"
+    with pytest.raises(TypeError, match=r"enabled.*boolean"):
+        nemo_rl_env._coerce_sequence_safety_config(string_bool)
+
+    unconfirmed = copy.deepcopy(raw)
+    unconfirmed["host_evidence"]["confirmed"] = "true"
+    with pytest.raises(TypeError, match=r"confirmed.*boolean"):
+        nemo_rl_env._coerce_sequence_safety_config(unconfirmed)
+
+    eukaryotic_evidence = copy.deepcopy(raw)
+    eukaryotic_evidence["host_evidence"]["replication_host_domains"] = ["EUKARYOTA"]
+    with pytest.raises(ValueError, match="prokaryotic"):
+        nemo_rl_env._coerce_sequence_safety_config(eukaryotic_evidence)
+
+
+def test_environment_requires_enabled_sequence_safety(tmp_path: Path):
+    """A training actor must fail fast instead of running with a disabled or absent mandatory gate."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    with pytest.raises(ValueError, match=r"sequence_safety.*required"):
+        env_cls({})
+
+    disabled = _sequence_safety_mapping(tmp_path)
+    disabled["enabled"] = False
+    with pytest.raises(ValueError, match=r"sequence_safety.*enabled"):
+        env_cls({"sequence_safety": disabled})
+
+
+def test_environment_maps_genome_length_reward_bounds(tmp_path: Path):
+    """The resolved RL environment must not fall back to the broad hard-QC interval."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = env_cls(
+        {
+            "sequence_safety": _sequence_safety_mapping(tmp_path),
+            "genome_length_reward_lower_zero": 3000,
+            "genome_length_reward_lower_full": 5359,
+            "genome_length_reward_upper_full": 5391,
+            "genome_length_reward_upper_zero": 5426,
+        }
+    )
+
+    assert (
+        env.config.genome_length_reward_lower_zero,
+        env.config.genome_length_reward_lower_full,
+        env.config.genome_length_reward_upper_full,
+        env.config.genome_length_reward_upper_zero,
+    ) == (3000.0, 5359.0, 5391.0, 5426.0)
+
+
+def test_environment_parses_no_eod_reward_gate(tmp_path: Path):
+    """Old custom configs remain ungated; the PhiX YAMLs explicitly enable the gate."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    base = {"sequence_safety": _sequence_safety_mapping(tmp_path)}
+
+    assert env_cls(base).zero_reward_without_eod is False
+    assert env_cls({**base, "zero_reward_without_eod": True}).zero_reward_without_eod is True
+    with pytest.raises(TypeError, match=r"zero_reward_without_eod.*boolean"):
+        env_cls({**base, "zero_reward_without_eod": "true"})
+
+
+def test_gdpo_objective_scores_reduce_named_columns_positionally():
+    """GDPO helper should build a stable [B, K] objective table without adding aggregate reward."""
+    scored = pd.DataFrame(
+        {
+            "reward_valid_nt_chars": [1.0, 0.0],
+            "reward_genome_length": [1.0, 0.5],
+            "reward_external_tropism": [0.25, 0.75],
+            "safety_gate_state": ["PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0],
+        }
+    )
+
+    objectives = (
+        GDPOObjective("feasibility", ("reward_valid_nt_chars", "reward_genome_length"), "mean"),
+        GDPOObjective("function", ("reward_external_tropism",), "mean"),
+    )
+    objective_scores = gdpo_objective_scores_from_scored(scored, objectives)
+
+    assert list(objective_scores.columns) == ["feasibility", "function"]
+    assert objective_scores.to_numpy().tolist() == [[1.0, 0.25], [0.25, 0.75]]
+
+
+@pytest.mark.parametrize("config_name", ["grpo_phage_megatron.yaml", "gdpo_phage_megatron.yaml"])
+def test_no_eod_gate_zeros_entire_rl_reward(config_name: str) -> None:
+    """Both shipped PhiX defaults reject no-EOD rows, including below-cap outputs."""
+    config = yaml.safe_load((Path(__file__).parents[3] / "configs" / config_name).read_text())
+    gate = config["env"]["phage_qc"]["zero_reward_without_eod"]
+    scored = pd.DataFrame(
+        {
+            "generation_stopped_on_eod": [True, False, False],
+            "generation_capped_without_eod": [False, True, False],
+            "reward": [0.7, 0.8, 0.9],
+            "reward_biological_a": [0.4, 0.5, 0.6],
+            "reward_biological_b": [0.2, 0.3, 0.4],
+            "reward_safety_amr": [1.0, 1.0, 1.0],
+            "safety_amr_state": ["PASS", "PASS", "PASS"],
+            "safety_amr_required": [1.0, 1.0, 1.0],
+            "safety_gate_state": ["PASS", "PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0, 1.0],
+        }
+    )
+    objectives = (
+        GDPOObjective("a", ("reward_biological_a",)),
+        GDPOObjective("b", ("reward_biological_b",)),
+        GDPOObjective("safety_amr", ("reward_safety_amr",), requires_safety_eligibility=False),
+    )
+
+    scalar = nemo_rl_env._qualified_scalar_rewards(scored, zero_reward_without_eod=gate)
+    matrix = gdpo_objective_scores_from_scored(scored, objectives, zero_reward_without_eod=gate)
+
+    assert scalar.tolist() == pytest.approx([0.7, 0.0, 0.0])
+    assert matrix.to_dict("list") == {
+        "a": pytest.approx([0.4, 0.0, 0.0]),
+        "b": pytest.approx([0.2, 0.0, 0.0]),
+        "safety_amr": pytest.approx([1.0, 0.0, 0.0]),
+    }
+
+
+def test_default_gdpo_objectives_expose_three_independent_safety_signals():
+    """Omitting custom objectives must not silently drop the three mandatory safety signals."""
+    objectives = nemo_rl_env._coerce_gdpo_objectives(None)
+
+    by_name = {objective.name: objective for objective in objectives}
+    safety_names = {"safety_amr", "safety_toxin", "safety_lysogeny"}
+    for name in safety_names:
+        assert by_name[name].columns == (f"reward_{name}",)
+        assert by_name[name].requires_safety_eligibility is False
+    assert all(objective.requires_safety_eligibility for objective in objectives if objective.name not in safety_names)
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, 1, None])
+def test_gdpo_objective_parser_rejects_non_boolean_safety_eligibility(invalid: object):
+    """Truthy strings and integer lookalikes must not bypass objective eligibility masking."""
+    raw = [
+        {
+            "name": "biological",
+            "columns": ["reward_valid_nt_chars"],
+            "requires_safety_eligibility": invalid,
+        }
+    ]
+
+    with pytest.raises(TypeError, match=r"requires_safety_eligibility.*boolean"):
+        nemo_rl_env._coerce_gdpo_objectives(raw)
+
+
+def test_gdpo_masks_only_optimization_values_with_exact_safety_eligibility():
+    """Biology requires reconciled PASS telemetry while valid class objectives stay exposed."""
+    scored = pd.DataFrame(
+        {
+            "reward_biological": [0.75] * 9,
+            "reward_safety_amr": [1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+            "safety_amr_state": [
+                "PASS",
+                "PASS",
+                "FAIL",
+                "INDETERMINATE",
+                "PASS",
+                "PASS",
+                "PASS",
+                "FAIL",
+                "INDETERMINATE",
+            ],
+            "safety_amr_required": [1.0] * 9,
+            "safety_gate_pass": pd.Series([1.0, 1, 1.0, 1.0, True, "1", "1.0", 0.0, None], dtype=object),
+            "average_protein_percent_identity": [80.0, 81.0, 82.0, 83.0, 84.0, 85.0, 86.0, 87.0, 88.0],
+            "safety_gate_state": [
+                "PASS",
+                "PASS",
+                "FAIL",
+                "INDETERMINATE",
+                "PASS",
+                "PASS",
+                "PASS",
+                "PASS",
+                "PASS",
+            ],
+        }
+    )
+    original = scored.copy(deep=True)
+    objectives = (
+        GDPOObjective("biological", ("reward_biological",)),
+        GDPOObjective(
+            "safety_amr",
+            ("reward_safety_amr",),
+            requires_safety_eligibility=False,
+        ),
+    )
+
+    objective_scores = gdpo_objective_scores_from_scored(scored, objectives)
+
+    assert objective_scores["biological"].tolist() == [0.75, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert objective_scores["safety_amr"].tolist() == scored["reward_safety_amr"].tolist()
+    pd.testing.assert_frame_equal(scored, original)
+
+
+def test_gdpo_ineligible_nan_biological_objective_is_exactly_zero():
+    """Masking must not let NaN survive multiplication into an ineligible optimization reward."""
+    scored = pd.DataFrame(
+        {"reward_biological": [float("nan")], "safety_gate_state": ["FAIL"], "safety_gate_pass": [0.0]}
+    )
+
+    objective_scores = gdpo_objective_scores_from_scored(
+        scored,
+        (GDPOObjective("biological", ("reward_biological",)),),
+    )
+
+    assert objective_scores["biological"].tolist() == [0.0]
+    assert pd.isna(scored.loc[0, "reward_biological"])
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf"), True, "1.0", 1 + 0j])
+def test_gdpo_objectives_reject_nonfinite_or_nonexact_values(invalid: object):
+    """No biological or safety objective may emit coerced, NaN, or infinite values."""
+    scored = pd.DataFrame(
+        {
+            "reward_biological": [invalid],
+            "reward_safety_amr": [invalid],
+            "safety_gate_state": ["PASS"],
+            "safety_gate_pass": [1.0],
+            "safety_amr_state": ["PASS"],
+            "safety_amr_required": [1.0],
+        }
+    )
+    original = scored.copy(deep=True)
+
+    objective_scores = gdpo_objective_scores_from_scored(
+        scored,
+        (
+            GDPOObjective("biological", ("reward_biological",)),
+            GDPOObjective("safety_amr", ("reward_safety_amr",), requires_safety_eligibility=False),
+        ),
+    )
+
+    assert objective_scores.to_numpy().tolist() == [[0.0, 0.0]]
+    pd.testing.assert_frame_equal(scored, original)
+
+
+def test_phix_joint_score_matrix():
+    """The shipped pair/triple reducers preserve partial credit, individual columns and gates."""
+    config = yaml.safe_load((Path(__file__).parents[3] / "configs/gdpo_phage_megatron.yaml").read_text())
+    env = config["env"]["phage_qc"]
+    objectives = nemo_rl_env._coerce_gdpo_objectives(env["gdpo_objectives"])
+    scored = pd.DataFrame({column: [1.0] * 6 for objective in objectives for column in objective.columns})
+    scored["reward_external_average_protein_identity"] = [0.8, 0.0, 1.0, 1.0, 1.0, float("nan")]
+    scored["reward_external_core_gene_ordered_conservation"] = [0.5, 1.0, 1.0, 1.0, 1.0, 0.5]
+    scored["reward_external_accessory_gene_diversification"] = [0.25, 1.0, 1.0, 1.0, 1.0, 0.5]
+    scored["reward_gene_a_origin"] = [0.8, 1.0, 1.0, 1.0, 1.0, 1.0]
+    scored["reward_gene_b_integrity"] = [0.5, 0.0, 1.0, 1.0, 1.0, float("nan")]
+    scored["safety_gate_state"] = ["PASS", "PASS", "PASS", "FAIL", "PASS", "PASS"]
+    scored["safety_gate_pass"] = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0]
+    scored["generation_stopped_on_eod"] = [True, True, True, True, False, True]
+    scored["generation_capped_without_eod"] = [False, False, False, False, True, False]
+    for safety_class in ("amr", "toxin", "lysogeny"):
+        scored[f"safety_{safety_class}_state"] = "PASS"
+        scored[f"safety_{safety_class}_required"] = 1.0
+    original = scored.copy(deep=True)
+    scores = gdpo_objective_scores_from_scored(
+        scored, objectives, zero_reward_without_eod=env["zero_reward_without_eod"]
+    )
+    assert scores["aai_with_core"].tolist() == pytest.approx([0.4, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert scores["accessory_with_core"].tolist() == pytest.approx([0.125, 1.0, 1.0, 0.0, 0.0, 0.25])
+    assert scores["aai_with_core_and_accessory"].tolist() == pytest.approx([0.1, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert scores["average_protein_identity"].tolist() == pytest.approx([0.8, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert scores["core_gene_ordered_conservation"].tolist() == pytest.approx([0.5, 1.0, 1.0, 0.0, 0.0, 0.5])
+    assert scores["gene_b_integrity"].tolist() == pytest.approx([0.5, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert scores["gene_a_and_b_with_accessory"].tolist() == pytest.approx([0.1, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert scores["gene_a_and_b_with_core"].tolist() == pytest.approx([0.2, 0.0, 1.0, 0.0, 0.0, 0.0])
+    assert scores["gene_a_and_b_with_core_aai_accessory"].tolist() == pytest.approx([0.04, 0, 1, 0, 0, 0])
+    assert scores.shape == (6, 22)
+    assert (scores.loc[4] == 0.0).all()  # No EOD also zeros the three safety columns.
+    assert scores.loc[3, "safety_amr"] == 1.0  # Overall failure doesn't mask class evidence.
+    pd.testing.assert_frame_equal(scored, original)
+    shuffled = gdpo_objective_scores_from_scored(
+        scored.iloc[::-1], objectives, zero_reward_without_eod=env["zero_reward_without_eod"]
+    )
+    pd.testing.assert_frame_equal(shuffled.sort_index(), scores)
+
+
+def test_joint_measurement_intersection():
+    """Joint measurement is the row-wise intersection, not the minimum marginal rate."""
+    config = yaml.safe_load((Path(__file__).parents[3] / "configs/gdpo_phage_megatron.yaml").read_text())
+    objectives = nemo_rl_env._coerce_gdpo_objectives(
+        [o for o in config["env"]["phage_qc"]["gdpo_objectives"] if o.get("reducer") == "product"]
+    )
+    scored = pd.DataFrame({column: [0.0] * 3 for objective in objectives for column in objective.columns})
+    scored["average_protein_identity_measurement_available"] = [1.0, 0.0, 1.0]
+    scored["core_gene_ordered_conservation_measurement_available"] = [0.0, 1.0, 1.0]
+    scored["accessory_gene_diversification_measurement_available"] = [1.0, 1.0, 0.0]
+    scored["smooth_reference_measurement_available"] = [1.0, 0.0, 1.0]
+    metrics = phage_qc_metrics_from_scored(scored, RewardWeights(), objectives=objectives)
+    assert metrics["gdpo/aai_with_core_measurement_available_rate"] == pytest.approx(1 / 3)
+    assert metrics["gdpo/accessory_with_core_measurement_available_rate"] == pytest.approx(1 / 3)
+    assert metrics["gdpo/aai_with_core_and_accessory_measurement_available_rate"] == 0.0
+    assert metrics["gdpo/gene_a_and_b_with_core_measurement_available_rate"] == pytest.approx(1 / 3)
+    assert metrics["gdpo/gene_a_and_b_with_accessory_measurement_available_rate"] == pytest.approx(1 / 3)
+    assert metrics["gdpo/gene_a_and_b_with_core_aai_accessory_measurement_available_rate"] == 0.0
+    missing = scored.drop(columns="average_protein_identity_measurement_available")
+    metrics = phage_qc_metrics_from_scored(missing, RewardWeights(), objectives=objectives)
+    assert metrics["gdpo/aai_with_core_measurement_available_rate"] == 0.0
+
+
+def test_gdpo_safety_objective_requires_reconciled_class_state_reward_and_required_flag():
+    """Safety credit requires matching class state, applicability, and numeric reward fields."""
+    scored = pd.DataFrame(
+        {
+            "reward_safety_lysogeny": [1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            "safety_lysogeny_state": ["PASS", "FAIL", "FAIL", "INDETERMINATE", "FAIL", None],
+            "safety_lysogeny_required": [1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+        }
+    )
+    objective = GDPOObjective(
+        "safety_lysogeny",
+        ("reward_safety_lysogeny",),
+        requires_safety_eligibility=False,
+    )
+
+    scores = gdpo_objective_scores_from_scored(scored, (objective,))
+    missing_support = gdpo_objective_scores_from_scored(
+        pd.DataFrame({"reward_safety_lysogeny": [1.0]}),
+        (objective,),
+    )
+
+    assert scores["safety_lysogeny"].tolist() == [1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    assert missing_support["safety_lysogeny"].tolist() == [0.0]
+
+
+def test_gdpo_safety_objective_accepts_partial_credit_only_for_a_measured_review_finding():
+    objective = GDPOObjective(
+        "safety_toxin",
+        ("reward_safety_toxin",),
+        requires_safety_eligibility=False,
+    )
+    scored = pd.DataFrame(
+        {
+            "reward_safety_toxin": [0.25, 0.25, 0.25, 0.0],
+            "safety_toxin_state": ["INDETERMINATE"] * 4,
+            "safety_toxin_required": [1.0] * 4,
+            "safety_toxin_measurement_available": [1.0, 0.0, 1.0, 0.0],
+            "safety_toxin_finding_count": [1, 1, 0, 0],
+        }
+    )
+
+    scores = gdpo_objective_scores_from_scored(scored, (objective,))
+
+    assert scores["safety_toxin"].tolist() == [0.25, 0.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize("reducer", ["mean", "product", "min"])
+def test_gdpo_reducer_zeros_entire_objective_when_any_component_is_invalid(reducer: str):
+    """A reducer cannot hide one invalid component by skipping or averaging it."""
+    scored = pd.DataFrame(
+        {
+            "reward_component_a": [1.0],
+            "reward_component_b": [float("nan")],
+            "safety_gate_state": ["PASS"],
+            "safety_gate_pass": [1.0],
+        }
+    )
+
+    scores = gdpo_objective_scores_from_scored(
+        scored,
+        (GDPOObjective("biological", ("reward_component_a", "reward_component_b"), reducer),),
+    )
+
+    assert scores["biological"].tolist() == [0.0]
+
+
+def test_gdpo_objective_scores_reject_missing_columns():
+    """Config mistakes should fail before NeMo-RL receives a malformed reward tensor."""
+    scored = pd.DataFrame({"reward_valid_nt_chars": [1.0]})
+
+    with pytest.raises(ValueError, match="missing reward column"):
+        gdpo_objective_scores_from_scored(
+            scored,
+            (GDPOObjective("novelty", ("reward_mmseqs_cluster_diversity",), "mean"),),
+        )
+
+
+def test_empty_gdpo_objective_scores_keep_configured_shape():
+    """An empty assembled rollout still has a stable zero-row positional objective schema."""
+    objectives = (
+        GDPOObjective("biological", ("reward_biological",)),
+        GDPOObjective("safety_amr", ("reward_safety_amr",), requires_safety_eligibility=False),
+    )
+
+    scores = gdpo_objective_scores_from_scored(pd.DataFrame(), objectives)
+
+    assert scores.shape == (0, 2)
+    assert list(scores.columns) == ["biological", "safety_amr"]
+
+    indexed_empty_scores = gdpo_objective_scores_from_scored(pd.DataFrame(index=range(2)), objectives)
+    assert indexed_empty_scores.shape == (2, 2)
+    assert indexed_empty_scores.to_numpy().tolist() == [[0.0, 0.0], [0.0, 0.0]]
+
+
+def test_phage_qc_metrics_bin_authentic_eod_lengths() -> None:
+    """Fixed-bank telemetry must retain stop frequency and placement direction."""
+    scored = pd.DataFrame(
+        {
+            "genome_length": [2999, 3000, 5358, 5359, 5391, 5392, 5425, 5426, 5444],
+            "prompt_group": ["AAAA"] * 8 + ["CCCC"],
+            "generation_stopped_on_eod": [True, True, True, True, True, True, True, True, False],
+            "generation_capped_without_eod": [False, False, False, False, False, False, False, False, True],
+            "reward_valid_nt_chars": [1.0] * 9,
+            "safety_gate_state": ["PASS"] * 9,
+            "safety_gate_pass": [1.0] * 9,
+            "reward": [1.0] * 9,
+        }
+    )
+    config = NucleotideQCConfig(
+        genome_length_reward_lower_zero=3000,
+        genome_length_reward_lower_full=5359,
+        genome_length_reward_upper_full=5391,
+        genome_length_reward_upper_zero=5426,
+    )
+
+    metrics = phage_qc_metrics_from_scored(scored, RewardWeights(valid_nt_chars=1.0), config=config)
+
+    assert metrics["termination/authentic_eod_rate"] == pytest.approx(8 / 9)
+    assert metrics["termination/no_authentic_eod_prompt_group_rate"] == 0.5
+    expected_bins = {
+        "below_lower_zero": 1,
+        "lower_taper": 2,
+        "full_credit": 2,
+        "upper_taper": 2,
+        "at_or_above_upper_zero": 1,
+    }
+    for name, count in expected_bins.items():
+        assert metrics[f"termination/authentic_eod_length/{name}_rate"] == pytest.approx(count / 8)
+
+
+def test_phage_qc_metrics_keep_non_eod_short_distinct_from_caps() -> None:
+    """A short response without a retained EOD is neither a cap nor an authentic stop."""
+    scored = pd.DataFrame(
+        {
+            "genome_length": [1000, 5444],
+            "generation_stopped_on_eod": [False, False],
+            "generation_capped_without_eod": [False, True],
+            "reward_valid_nt_chars": [1.0, 1.0],
+            "safety_gate_state": ["PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0],
+            "reward": [0.0, 0.0],
+        }
+    )
+
+    metrics = phage_qc_metrics_from_scored(scored, RewardWeights(valid_nt_chars=1.0))
+
+    assert not any(key.startswith("termination/authentic_eod_length/") for key in metrics)
+
+
+def test_empty_phage_qc_metrics_publish_required_checkpoint_zero():
+    """Checkpoint selection must receive an explicit safe zero for an empty batch."""
+    metrics = phage_qc_metrics_from_scored(pd.DataFrame(), RewardWeights(valid_nt_chars=1.0))
+
+    assert metrics == {
+        "num_sequences": 0,
+        "all_objectives_max_score_rate": 0.0,
+    }
+
+
+@pytest.mark.parametrize("state", ["FAIL", "INDETERMINATE"])
+def test_grpo_step_uses_final_reward_and_preserves_safety_evidence(monkeypatch, state: str):
+    """An ineligible rollout returns zero while retaining historical and safety support telemetry."""
+    env_cls, env = _new_step_environment(reward_output_mode="scalar", gdpo_objectives=())
+
+    def fake_score_message_logs(
+        message_log_batch,
+        *,
+        config,
+        weights,
+        external_qc,
+        mmseqs_cluster_diversity,
+        sequence_safety,
+    ):
+        assert sequence_safety is env.sequence_safety
+        assert len(message_log_batch) == 1
+        return pd.DataFrame(
+            {
+                "sequence": ["ACGT"],
+                "reward": [0.0],
+                "reward_historical": [0.75],
+                "safety_gate_state": [state],
+                "safety_gate_pass": [0.0],
+                "safety_gate_reason_codes": ['["AMR_FINDING"]'],
+                "safety_environment_healthy": [1.0],
+                "safety_gate_measurement_available": [1.0],
+                "safety_amr_state": [state],
+                "safety_amr_reason_codes": ['["AMR_FINDING"]'],
+                "safety_amr_execution_status": ["COMPLETED_AND_PARSED"],
+                "safety_amr_finding_count": [1],
+                "safety_amr_policy_id": ["ema-phage-v1"],
+            }
+        )
+
+    monkeypatch.setattr(nemo_rl_env, "score_message_logs", fake_score_message_logs)
+
+    result = env_cls.step(env, [[{"role": "assistant", "content": "ACGT"}]], [{}])
+
+    assert result.rewards.tolist() == [0.0]
+    scored_metadata = result.metadata[0]["_phage_qc_scored"]
+    assert scored_metadata["safety_gate_state"] == state
+    assert scored_metadata["safety_gate_reason_codes"] == '["AMR_FINDING"]'
+    assert scored_metadata["safety_amr_state"] == state
+    assert scored_metadata["safety_amr_reason_codes"] == '["AMR_FINDING"]'
+    assert scored_metadata["safety_amr_execution_status"] == "COMPLETED_AND_PARSED"
+    assert scored_metadata["safety_amr_finding_count"] == 1
+    assert scored_metadata["safety_amr_policy_id"] == "ema-phage-v1"
+
+
+def test_step_preserves_compact_generation_stop_evidence(monkeypatch) -> None:
+    """The environment must return token-derived stop flags with the scored row."""
+    env_cls, env = _new_step_environment(reward_output_mode="scalar", gdpo_objectives=())
+    env.config = NucleotideQCConfig(
+        genome_length_reward_lower_zero=3000,
+        genome_length_reward_lower_full=5359,
+        genome_length_reward_upper_full=5391,
+        genome_length_reward_upper_zero=5426,
+    )
+
+    def fake_score_message_logs(*_args, **_kwargs):
+        return pd.DataFrame(
+            {
+                "sequence": ["ACGT"],
+                "genome_length": [5359],
+                "reward": [1.0],
+                "safety_gate_state": ["PASS"],
+                "safety_gate_pass": [1.0],
+            }
+        )
+
+    monkeypatch.setattr(nemo_rl_env, "score_message_logs", fake_score_message_logs)
+
+    result = env_cls.step(
+        env,
+        [[{"role": "assistant", "content": "ACGT"}]],
+        [{"_generation_stopped_on_eod": True, "_generation_capped_without_eod": False}],
+    )
+
+    scored_metadata = result.metadata[0]["_phage_qc_scored"]
+    assert scored_metadata["generation_stopped_on_eod"] is True
+    assert scored_metadata["generation_capped_without_eod"] is False
+    _, metrics = env_cls.global_post_process_and_metrics(
+        env,
+        {"total_reward": result.rewards, "extra_env_info": result.metadata},
+    )
+    assert metrics["termination/authentic_eod_rate"] == 1.0
+
+
+def test_scalar_no_eod_gate_penalizes_without_masking(monkeypatch) -> None:
+    """No-EOD rows stay in scalar GRPO with exact-zero reward and intact diagnostics."""
+    env_cls, env = _new_step_environment(reward_output_mode="scalar", gdpo_objectives=())
+    env.zero_reward_without_eod = True
+
+    def fake_score_message_logs(*_args, **_kwargs):
+        return pd.DataFrame(
+            {
+                "sequence": ["ACGT", "ACGT", "ACGT"],
+                "prompt_group": ["AAAA", "AAAA", "AAAA"],
+                "reward": [0.75, 0.80, 0.85],
+                "reward_external_required_genes": [0.4, 0.6, 0.8],
+                "safety_gate_state": ["PASS", "PASS", "PASS"],
+                "safety_gate_pass": [1.0, 1.0, 1.0],
+            }
+        )
+
+    monkeypatch.setattr(nemo_rl_env, "score_message_logs", fake_score_message_logs)
+    metadata = [
+        {"prompt_index": 0, "_generation_stopped_on_eod": True, "_generation_capped_without_eod": False},
+        {"prompt_index": 0, "_generation_stopped_on_eod": False, "_generation_capped_without_eod": True},
+        {"prompt_index": 1, "_generation_stopped_on_eod": False, "_generation_capped_without_eod": False},
+    ]
+
+    result = env_cls.step(env, [[{"role": "assistant", "content": "ACGT"}]] * 3, metadata)
+
+    assert result.rewards.tolist() == pytest.approx([0.75, 0.0, 0.0])
+    assert result.observations == [
+        {"role": "environment", "content": "phage_qc_reward=0.750000"},
+        {"role": "environment", "content": "phage_qc_reward=0.000000"},
+        {"role": "environment", "content": "phage_qc_reward=0.000000"},
+    ]
+    assert [row["_phage_qc_scored"]["reward"] for row in result.metadata] == [0.75, 0.8, 0.85]
+    assert [row["_phage_qc_scored"]["eod_reward_gate_pass"] for row in result.metadata] == [True, False, False]
+    assert [row["_phage_qc_scored"]["generation_prompt_index"] for row in result.metadata] == [0, 0, 1]
+    assert result.terminateds.tolist() == [True, True, True]
+
+
+def test_no_eod_gate_requires_token_evidence(monkeypatch) -> None:
+    """An enabled gate must fail closed when token-derived stop evidence is absent."""
+    env_cls, env = _new_step_environment(reward_output_mode="scalar", gdpo_objectives=())
+    env.zero_reward_without_eod = True
+
+    monkeypatch.setattr(
+        nemo_rl_env,
+        "score_message_logs",
+        lambda *_args, **_kwargs: pd.DataFrame(
+            {
+                "sequence": ["ACGT"],
+                "reward": [0.75],
+                "safety_gate_state": ["PASS"],
+                "safety_gate_pass": [1.0],
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="token-derived EOD"):
+        env_cls.step(env, [[{"role": "assistant", "content": "ACGT"}]], [{}])
+
+
+@pytest.mark.parametrize(
+    ("state", "gate_value", "raw_reward", "expected_reward"),
+    [
+        ("PASS", 1.0, 0.75, 0.75),
+        ("PASS", 1, 0.75, 0.75),
+        ("FAIL", 1.0, 0.75, 0.0),
+        ("INDETERMINATE", 1.0, 0.75, 0.0),
+        ("pass", 1.0, 0.75, 0.0),
+        ("PASS", True, 0.75, 0.0),
+        ("PASS", "1", 0.75, 0.0),
+        ("PASS", 1.0, -0.25, 0.0),
+        ("PASS", 1.0, 1.25, 0.0),
+        ("PASS", 1.0, float("nan"), 0.0),
+        ("PASS", 1.0, float("inf"), 0.0),
+    ],
+)
+def test_scalar_step_regates_raw_reward_without_mutating_finite_diagnostics(
+    monkeypatch,
+    state: str,
+    gate_value: object,
+    raw_reward: float,
+    expected_reward: float,
+):
+    """Scalar optimization output requires exact eligibility and a finite raw reward."""
+    env_cls, env = _new_step_environment(reward_output_mode="scalar", gdpo_objectives=())
+
+    def fake_score_message_logs(*_args, **_kwargs):
+        return pd.DataFrame(
+            {
+                "sequence": ["ACGT"],
+                "reward": [raw_reward],
+                "reward_historical": [0.9],
+                "safety_gate_state": [state],
+                "safety_gate_pass": [gate_value],
+            }
+        )
+
+    monkeypatch.setattr(nemo_rl_env, "score_message_logs", fake_score_message_logs)
+
+    result = env_cls.step(env, [[{"role": "assistant", "content": "ACGT"}]], [{}])
+
+    assert result.rewards.tolist() == [expected_reward]
+    assert result.observations == [{"role": "environment", "content": f"phage_qc_reward={expected_reward:.6f}"}]
+    scored_metadata = result.metadata[0]["_phage_qc_scored"]
+    assert scored_metadata["safety_gate_state"] == state
+    if math.isfinite(raw_reward):
+        assert scored_metadata["reward"] == raw_reward
+    else:
+        assert "reward" not in scored_metadata
+
+
+@pytest.mark.parametrize(
+    ("state", "gate_value", "raw_reward", "expected_observation", "expected_objective"),
+    [
+        ("PASS", 1.0, 0.6, 0.6, 0.75),
+        ("FAIL", 1.0, 0.6, 0.0, 0.0),
+        ("INDETERMINATE", 1.0, float("inf"), 0.0, 0.0),
+        ("PASS", 1.0, float("inf"), 0.0, 0.75),
+        ("PASS", 1.0, "malformed", 0.0, 0.75),
+        ("PASS", 1.0, 1.5, 0.0, 0.75),
+    ],
+)
+def test_gdpo_step_observation_uses_reconciled_bounded_scalar_reward(
+    monkeypatch,
+    state: str,
+    gate_value: object,
+    raw_reward: object,
+    expected_observation: float,
+    expected_objective: float,
+):
+    """GDPO observations never expose or format an untrusted raw scalar reward."""
+    env_cls, env = _new_step_environment(
+        reward_output_mode="gdpo",
+        gdpo_objectives=(GDPOObjective("biological", ("reward_biological",)),),
+    )
+
+    def fake_score_message_logs(*_args, **_kwargs):
+        return pd.DataFrame(
+            {
+                "sequence": ["ACGT"],
+                "reward": [raw_reward],
+                "reward_historical": [0.8],
+                "reward_biological": [0.75],
+                "safety_gate_state": [state],
+                "safety_gate_pass": [gate_value],
+            }
+        )
+
+    monkeypatch.setattr(nemo_rl_env, "score_message_logs", fake_score_message_logs)
+
+    result = env_cls.step(env, [[{"role": "assistant", "content": "ACGT"}]], [{}])
+
+    assert result.rewards.tolist() == [[expected_objective]]
+    assert result.observations == [{"role": "environment", "content": f"phage_qc_reward={expected_observation:.6f}"}]
+
+
+def test_phage_qc_metrics_marks_timing_metrics_for_nemorl_timing_logger():
+    """Timing columns should be returned with a marker for NeMo-RL timing/train routing."""
+    scored = pd.DataFrame(
+        {
+            "reward_valid_nt_chars": [1.0, 0.0],
+            "safety_gate_state": ["PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0],
+            "reward": [1.0, 0.0],
+            f"{TIMING_COLUMN_PREFIX}reward/total_s": [2.0, 4.0],
+        }
+    )
+
+    metrics = phage_qc_metrics_from_scored(scored, RewardWeights(valid_nt_chars=1.0))
+
+    timing_key = f"{TIMING_METRIC_MARKER_PREFIX}phage_qc/reward/total_s"
+    assert metrics[timing_key] == 3.0
+    assert "timing/phage_qc/reward/total_s" not in metrics
+
+
+def test_scored_records_exclude_full_sequence_from_rollout_metadata():
+    """Rollout metadata should carry scalar scores/status, not full generated sequences."""
+    scored = pd.DataFrame(
+        {
+            "sequence": ["A" * 6000],
+            "id_prompt": ["seq1"],
+            "reward": [0.5],
+            "reward_biological": [0.75],
+            "reward_safety_amr": [1.0],
+            "core_gene_ordered_conservation_measurement_available": [1.0],
+            "missing_status": ["unavailable"],
+            "mmseqs_cluster_id": ["group0:seq_0"],
+            "safety_gate_state": ["PASS"],
+            "safety_gate_reason_codes": ['["SAFETY_OK"]'],
+            "safety_amr_state": ["PASS"],
+            "safety_amr_reason_codes": ["[]"],
+            "safety_amr_execution_status": ["COMPLETED_AND_PARSED"],
+            "safety_amr_policy_id": ["ema-phage-v1"],
+            "safety_amr_finding_count": [0],
+            "safety_nested_payload": [{"state": "PASS"}],
+            "safety_list_payload": [["PASS"]],
+            "safety_unbounded_payload": ["x" * 4097],
+            "reward_nonfinite": [float("inf")],
+            "reward_nan": [float("nan")],
+            "reward_complex": [1 + 2j],
+        }
+    )
+    # pandas 3 rejects lone surrogates in its inferred str dtype, so add the
+    # invalid-unicode probe as an object-dtype column after construction.
+    scored["safety_invalid_unicode"] = pd.Series(["\ud800"], dtype=object)
+
+    records = _scored_records(scored)
+
+    assert records == [
+        {
+            "reward": 0.5,
+            "reward_biological": 0.75,
+            "reward_safety_amr": 1.0,
+            "core_gene_ordered_conservation_measurement_available": 1.0,
+            "mmseqs_cluster_id": "group0:seq_0",
+            "safety_gate_state": "PASS",
+            "safety_gate_reason_codes": '["SAFETY_OK"]',
+            "safety_amr_state": "PASS",
+            "safety_amr_reason_codes": "[]",
+            "safety_amr_execution_status": "COMPLETED_AND_PARSED",
+            "safety_amr_policy_id": "ema-phage-v1",
+            "safety_amr_finding_count": 0,
+        }
+    ]
+    json.dumps(records, allow_nan=False)
+
+
+def test_global_post_process_metrics_leave_task_namespace_to_nemo_rl():
+    """The environment hook returns bare keys because NeMo-RL adds the task namespace."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env.reward_output_mode = "gdpo"
+    env.gdpo_objectives = (
+        GDPOObjective("valid_nt_chars", ("reward_valid_nt_chars",)),
+        GDPOObjective("required_genes", ("reward_external_required_genes",)),
+    )
+    env._last_gdpo_objective_scores = pd.DataFrame({"valid_nt_chars": [0.99], "required_genes": [0.99]})
+    batch = {
+        "total_reward": torch.tensor([1.0, 0.0]),
+        "extra_env_info": [
+            {
+                "_phage_qc_scored": {
+                    "reward_valid_nt_chars": 1.0,
+                    "reward_external_required_genes": 0.25,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                    "reward": 1.0,
+                    f"{TIMING_COLUMN_PREFIX}reward/total_s": 2.0,
+                }
+            },
+            {
+                "_phage_qc_scored": {
+                    "reward_valid_nt_chars": 0.0,
+                    "reward_external_required_genes": 0.75,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                    "reward": 0.0,
+                    f"{TIMING_COLUMN_PREFIX}reward/total_s": 4.0,
+                }
+            },
+        ],
+    }
+    returned_batch, metrics = env_cls.global_post_process_and_metrics(env, batch)
+
+    assert returned_batch is batch
+    assert metrics["mean_reward"] == 0.5
+    assert metrics["gdpo/valid_nt_chars_mean"] == 0.5
+    assert metrics["gdpo/valid_nt_chars_std"] == pytest.approx(0.5)
+    assert metrics["gdpo/valid_nt_chars_nonzero_rate"] == 0.5
+    assert metrics["gdpo/required_genes_std"] == pytest.approx(0.25)
+    assert metrics["gdpo/required_genes_nonzero_rate"] == 1.0
+    assert metrics[f"{TIMING_METRIC_MARKER_PREFIX}phage_qc/reward/total_s"] == 3.0
+    assert "phage_qc/__timing__/phage_qc/reward/total_s" not in metrics
+
+
+@pytest.mark.parametrize("records_per_prompt", [1, 8])
+def test_gdpo_prompt_groups(tmp_path, records_per_prompt) -> None:
+    """The real estimator pools 384 completions per token prefix and equally scales objectives.
+
+    Splitting by record ID would give constant 48-row groups in the repeated-record
+    case; pooling both prefixes would introduce a spurious between-prompt baseline.
+    """
+    estimator_module = pytest.importorskip("nemo_rl.algorithms.advantage_estimator")
+    from bionemo.evo2_phage_gen.generation import write_rl_prompt_bank
+    from bionemo.evo2_phage_gen.nemo_rl_processors import phage_prompt_data_processor
+
+    bank = write_rl_prompt_bank(
+        tmp_path / "prompts.jsonl", prompt_lengths=(16, 24), num_records=2 * records_per_prompt
+    )
+    records = [json.loads(line) for line in bank.read_text().splitlines()]
+
+    def tokenize(text, **_kwargs):
+        # Evo2's nucleotide prefixes are byte tokens; no chat template is used.
+        return {"input_ids": torch.tensor([[ord(char) for char in text]])}
+
+    processed = [
+        phage_prompt_data_processor(record, SimpleNamespace(prompt=None), tokenize, max_seq_length=6144, idx=i)
+        for i, record in enumerate(records)
+    ]
+    prompts = torch.nn.utils.rnn.pad_sequence(
+        [row["message_log"][0]["token_ids"] for row in processed], batch_first=True, padding_value=0
+    ).repeat_interleave(384 // records_per_prompt, dim=0)
+    short = prompts[:, -1].eq(0)
+    assert [int(short.sum()), int((~short).sum())] == [384, 384]
+    first = torch.full((768,), 0.75, dtype=torch.float32)
+    second = torch.full((768,), 0.25, dtype=torch.float32)
+    first[short] = torch.tensor([0.0] * 192 + [1.0] * 192, dtype=torch.float32)
+    second[~short] = torch.tensor([0.25] * 192 + [0.75] * 192, dtype=torch.float32)
+    expected = torch.empty(768, dtype=torch.float32)
+    expected[short] = expected[~short] = torch.tensor([-1.0] * 192 + [1.0] * 192, dtype=torch.float32)
+    expected *= math.sqrt(767 / 768)  # Final sample-standard-deviation normalization.
+    estimator = estimator_module.GDPOAdvantageEstimator(
+        {"normalize_rewards": True, "use_leave_one_out_baseline": False}, {}
+    )
+    # Interleave eight generation shards; their row order must not change grouping.
+    for order in (torch.arange(768), torch.arange(768).reshape(8, 96).T.flatten()):
+        advantages = estimator.compute_advantage(
+            prompts[order],
+            None,
+            torch.ones(768, 3),
+            {"reward1": first[order], "reward2": second[order]},
+        )
+        torch.testing.assert_close(advantages, expected[order, None].expand(768, 3), atol=3e-6, rtol=0)
+    env_cls, env = _new_step_environment(
+        reward_output_mode="gdpo",
+        gdpo_objectives=(GDPOObjective("first", ("reward_first",)), GDPOObjective("second", ("reward_second",))),
+    )
+    batch = {
+        "rewards": torch.stack((first, second), dim=1),
+        "message_log": [row["message_log"] for row in processed for _ in range(384 // records_per_prompt)],
+        "extra_env_info": [
+            {
+                "_phage_qc_scored": {
+                    "reward_first": float(a),
+                    "reward_second": float(b),
+                    "reward": 0.5,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                }
+            }
+            for a, b in zip(first, second, strict=True)
+        ],
+    }
+    _, metrics = env_cls.global_post_process_and_metrics(env, batch)
+    assert metrics["reward_prompt_group_count"] == 2
+    assert metrics["reward_prompt_group_size_min"] == metrics["reward_prompt_group_size_max"] == 384
+    assert metrics["reward_zero_variance_prompt_group_rate"] == 0
+
+
+def test_prompt_groups_ignore_record_ids() -> None:
+    """Repeated records pool their signal; rank-local indices cannot merge different prompts."""
+    scored = pd.DataFrame(
+        {
+            "generation_prompt_index": [0, 1, 0, 1],
+            "prompt_group": ["AAAA", "AAAA", "CCCC", "CCCC"],
+            "reward": [0.0, 1.0, 0.25, 0.75],
+        }
+    )
+    groups = scored.groupby(nemo_rl_env._reward_prompt_group_keys(scored), sort=False)
+    assert groups.size().tolist() == [2, 2]
+    assert groups["reward"].mean().tolist() == [0.5, 0.5]
+
+
+def test_global_metrics_report_zero_variance_and_no_eod_groups() -> None:
+    """Prompt groups without EOD are visible before the reward gate loses learning signal."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env.reward_output_mode = "scalar"
+    env.gdpo_objectives = ()
+    env.zero_reward_without_eod = True
+    rows = [
+        {
+            "generation_prompt_index": 0,
+            "prompt_group": "AAAA",
+            "generation_stopped_on_eod": stopped,
+            "generation_capped_without_eod": not stopped,
+            "reward_valid_nt_chars": 1.0,
+            "safety_gate_state": "PASS",
+            "safety_gate_pass": 1.0,
+            "reward": raw_reward,
+            "eod_reward_gate_pass": stopped,
+        }
+        for stopped, raw_reward in (
+            (False, 0.8),
+            (False, 0.7),
+            (True, 0.5),
+            (True, 0.5),
+        )
+    ]
+    batch = {
+        "total_reward": torch.tensor([0.0, 0.0, 0.5, 0.5]),
+        "extra_env_info": [{"_phage_qc_scored": row} for row in rows],
+        # Identical DNA strings can carry different control tokens. Use the actual
+        # model input, not the nucleotide-only metadata or the record index.
+        "message_log": [
+            [{"role": "user", "token_ids": torch.tensor(tokens)}]
+            for tokens in ([1, 65, 65, 65, 65],) * 2 + ([2, 65, 65, 65, 65],) * 2
+        ],
+    }
+
+    _returned_batch, metrics = env_cls.global_post_process_and_metrics(env, batch)
+
+    assert metrics["reward_prompt_group_count"] == 2
+    assert metrics["reward_prompt_group_size_min"] == 2
+    assert metrics["reward_prompt_group_size_max"] == 2
+    assert metrics["reward_zero_variance_prompt_group_rate"] == 1.0
+    assert metrics["termination/no_authentic_eod_prompt_group_rate"] == 0.5
+
+
+def test_global_post_process_metrics_handles_empty_gdpo_batch_without_actor_cache():
+    """An empty assembled batch emits finite zero metrics and cannot reuse stale actor rows."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env.reward_output_mode = "gdpo"
+    env.gdpo_objectives = (
+        GDPOObjective("biological", ("reward_biological",)),
+        GDPOObjective("safety_amr", ("reward_safety_amr",), requires_safety_eligibility=False),
+    )
+    env._last_scored = pd.DataFrame(
+        {
+            "reward_valid_nt_chars": [1.0],
+            "safety_gate_state": ["PASS"],
+            "safety_gate_pass": [1.0],
+            "reward": [1.0],
+        }
+    )
+    env._last_gdpo_objective_scores = pd.DataFrame({"stale": [1.0]})
+
+    _returned_batch, metrics = env_cls.global_post_process_and_metrics(
+        env,
+        {"total_reward": torch.empty((0, 2)), "extra_env_info": []},
+    )
+
+    assert metrics["mean_reward"] == 0.0
+    assert metrics["num_sequences"] == 0
+    assert metrics["all_objectives_max_score_rate"] == 0.0
+    assert not any(key.startswith("gdpo/stale") for key in metrics)
+
+
+def test_global_post_process_metrics_report_zero_acceptance_without_rollout_metadata():
+    """Missing assembled metadata cannot be certified from an actor-local cache."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env._last_scored = pd.DataFrame(
+        {
+            "reward_valid_nt_chars": [1.0, 0.0],
+            "safety_gate_state": ["PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0],
+            "reward": [1.0, 0.0],
+        }
+    )
+
+    _returned_batch, metrics = env_cls.global_post_process_and_metrics(
+        env,
+        {"total_reward": torch.tensor([1.0, 0.0])},
+    )
+
+    assert metrics["num_sequences"] == 2
+    assert metrics["all_objectives_max_score_rate"] == 0.0
+
+
+def test_global_post_process_metrics_does_not_fill_optional_fields_from_actor_cache():
+    """Assembled rollout rows remain authoritative when optional cluster identity is absent."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env._last_scored = pd.DataFrame(
+        {
+            "reward_valid_nt_chars": [1.0, 1.0],
+            "mmseqs_cluster_id": ["group0:seq_0", "group0:seq_0"],
+            "mmseqs_cluster_size": [2, 2],
+            "safety_gate_state": ["PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0],
+            "reward": [1.0, 1.0],
+        }
+    )
+    batch = {
+        "total_reward": torch.tensor([1.0, 1.0]),
+        "extra_env_info": [
+            {
+                "_phage_qc_scored": {
+                    "reward_valid_nt_chars": 1.0,
+                    "mmseqs_cluster_size": 2,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                    "reward": 1.0,
+                }
+            },
+            {
+                "_phage_qc_scored": {
+                    "reward_valid_nt_chars": 1.0,
+                    "mmseqs_cluster_size": 2,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                    "reward": 1.0,
+                }
+            },
+        ],
+    }
+
+    _returned_batch, metrics = env_cls.global_post_process_and_metrics(env, batch)
+
+    assert metrics["all_objectives_max_score_rate"] == 1.0
+    assert "__histogram__/mmseqs_cluster_size" not in metrics
+
+
+@pytest.mark.parametrize(
+    "extra_env_info",
+    [
+        [
+            {
+                "_phage_qc_scored": {
+                    "reward_valid_nt_chars": 1.0,
+                    "reward_external_core_gene_ordered_conservation_pass": 1.0,
+                    "reward_external_average_protein_identity_pass": 1.0,
+                    "reward_external_required_genes_pass": 1.0,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                    "reward": 1.0,
+                }
+            },
+            None,
+        ],
+        [None, None],
+        [
+            {
+                "_phage_qc_scored": {
+                    "reward_valid_nt_chars": 1.0,
+                    "reward_external_core_gene_ordered_conservation_pass": 1.0,
+                    "reward_external_average_protein_identity_pass": 1.0,
+                    "reward_external_required_genes_pass": 1.0,
+                    "safety_gate_state": "PASS",
+                    "safety_gate_pass": 1.0,
+                    "reward": 1.0,
+                }
+            }
+        ],
+    ],
+)
+def test_global_post_process_metrics_rejects_partial_or_misaligned_metadata(
+    extra_env_info: list[dict[str, object] | None],
+):
+    """Dropping or compacting any rollout position invalidates batch-level certification."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env.reward_output_mode = "scalar"
+    env._last_scored = pd.DataFrame(
+        {
+            "reward_valid_nt_chars": [1.0, 1.0],
+            "safety_gate_state": ["PASS", "PASS"],
+            "safety_gate_pass": [1.0, 1.0],
+            "reward": [1.0, 1.0],
+        }
+    )
+
+    _returned_batch, metrics = env_cls.global_post_process_and_metrics(
+        env,
+        {"total_reward": torch.tensor([1.0, 1.0]), "extra_env_info": extra_env_info},
+    )
+
+    assert metrics["num_sequences"] == 2
+    assert metrics["all_objectives_max_score_rate"] == 0.0
+
+
+@pytest.mark.parametrize("scored_row", [{}, {"reward": 1.0}, {"safety_gate_state": "PASS", "reward": 1.0}])
+def test_global_gdpo_metrics_reject_correct_count_but_incomplete_scored_rows(
+    scored_row: dict[str, object],
+):
+    """Correct row count cannot certify missing aggregate or configured objective telemetry."""
+    if getattr(nemo_rl_env, "_NEMO_RL_IMPORT_ERROR", None) is not None:
+        pytest.skip("NeMo-RL is unavailable")
+
+    env_cls = nemo_rl_env.PhageQCEnvironment.__ray_metadata__.modified_class
+    env = object.__new__(env_cls)
+    env.cfg = {}
+    env.weights = RewardWeights(valid_nt_chars=1.0)
+    env.reward_output_mode = "gdpo"
+    env.gdpo_objectives = (GDPOObjective("biological", ("reward_biological",)),)
+
+    _returned_batch, metrics = env_cls.global_post_process_and_metrics(
+        env,
+        {
+            "total_reward": torch.ones((2, 1)),
+            "extra_env_info": [
+                {"_phage_qc_scored": dict(scored_row)},
+                {"_phage_qc_scored": dict(scored_row)},
+            ],
+        },
+    )
+
+    assert metrics["num_sequences"] == 2
+    assert metrics["all_objectives_max_score_rate"] == 0.0
+    assert not any(key.startswith("gdpo/biological_") for key in metrics)
+
+
+def test_configured_metrics_use_gated_scores_and_opt_in_lengths():
+    """Ceiling attainment uses configured objectives and gates, even when filter flags differ."""
+    scored = pd.DataFrame(
+        {
+            "reward_external_tropism": [1.0 - 1e-9, 0.5, 1.0, 1.0],
+            "tropism_protein_mmseqs_percent_identity": [10.0, float("nan"), 20.0, 30.0],
+            "reward_genome_length": [1.0, 1.0, 1.0, 1.0],
+            "reward_external_tropism_pass": [0.0, 1.0, 1.0, 1.0],
+            "reward_unused": [0.0] * 4,
+            "safety_gate_state": ["PASS", "PASS", "PASS", "INDETERMINATE"],
+            "safety_gate_pass": [1.0] * 4,
+            "generation_stopped_on_eod": [True, True, False, True],
+            "generation_capped_without_eod": [False, False, True, False],
+            "prompt_nt_length": [16, 16, 24, 24],
+            "tropism_measurement_available": [1.0] * 4,
+        },
+        index=[5] * 4,
+    )
+    objectives = (
+        GDPOObjective("tropism", ("reward_external_tropism",)),
+        GDPOObjective("length", ("reward_genome_length",)),
+    )
+    metrics = phage_qc_metrics_from_scored(
+        scored, RewardWeights(), objectives=objectives, zero_reward_without_eod=True
+    )
+    assert metrics["all_objectives_max_score_rate"] == 0.25
+    assert metrics["gdpo/tropism_mean"] == 0.375
+    assert metrics["gdpo/tropism_nonzero_rate"] == 0.5
+    assert metrics["gdpo/tropism_max_score_rate"] == 0.25
+    assert metrics["tropism_measurement_available_rate"] == 1.0
+    assert "tropism_protein_mmseqs_percent_identity_mean" not in metrics
+    assert not any(key.startswith("by_prompt_nt_length/") for key in metrics)
+    assert not any("unused" in key for key in metrics)
+    split = phage_qc_metrics_from_scored(
+        scored, RewardWeights(), objectives=objectives, zero_reward_without_eod=True, log_by_prompt_nt_length=True
+    )
+    assert split["by_prompt_nt_length/16/all_objectives_max_score_rate"] == 0.5
+    assert split["by_prompt_nt_length/24/all_objectives_max_score_rate"] == 0.0
+    assert split["by_prompt_nt_length/16/num_sequences"] == 2
+
+
+def test_cluster_histogram_counts_clusters_for_configured_diversity():
+    scored = pd.DataFrame(
+        {
+            "reward_mmseqs_cluster_diversity": [0.5, 0.5, 1.0, 0.0],
+            "mmseqs_cluster_id": ["a", "a", "b", ""],
+            "mmseqs_cluster_size": [2, 2, 1, 0],
+            "safety_gate_state": ["PASS"] * 4,
+            "safety_gate_pass": [1.0] * 4,
+        }
+    )
+    metrics = phage_qc_metrics_from_scored(scored, RewardWeights(mmseqs_cluster_diversity=1.0))
+    assert sorted(metrics["__histogram__/mmseqs_cluster_size"]) == [1, 2]
+    assert metrics["all_objectives_max_score_rate"] == 0.25
+    disabled = phage_qc_metrics_from_scored(scored, RewardWeights())
+    assert "__histogram__/mmseqs_cluster_size" not in disabled
