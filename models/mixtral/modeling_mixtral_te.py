@@ -160,7 +160,7 @@ class NVMixtralPreTrainedModel(PreTrainedModel):
     config_class = NVMixtralConfig
     base_model_prefix = "model"
     _no_split_modules = ("NVMixtralDecoderLayer",)
-    _skip_keys_device_placement = ("past_key_values",)
+    _skip_keys_device_placement = ("past_key_values", "cache")
     _do_not_quantize = ("lm_head", "model.layers.*.mlp.gate")  # Flag for testing that these layers are not quantized.
 
     def load_global_state_dict(
@@ -1048,6 +1048,17 @@ class NVMixtralForCausalLM(NVMixtralPreTrainedModel, transformers.GenerationMixi
 
         self.post_init()
 
+    def _prepare_cache_for_generation(self, generation_config, model_kwargs, *args, **kwargs):
+        """Disable KV caching in generate() unless an explicit TE `InferenceParams` cache is passed.
+
+        TE attention cannot use the `DynamicCache` that generate() would otherwise create, and generate() only feeds
+        the newest token when `use_cache=True`, so without a TE cache each step must recompute the full sequence.
+        """
+        cache = model_kwargs.get("cache", model_kwargs.get("past_key_values"))
+        if not isinstance(cache, InferenceParams):
+            generation_config.use_cache = False
+        return super()._prepare_cache_for_generation(generation_config, model_kwargs, *args, **kwargs)
+
     def forward(
         self,
         input_ids: torch.Tensor | None = None,
@@ -1060,9 +1071,14 @@ class NVMixtralForCausalLM(NVMixtralPreTrainedModel, transformers.GenerationMixi
         use_cache: bool | None = None,
         cache_position: torch.Tensor | None = None,
         logits_to_keep: int | torch.Tensor = 0,
+        cache: InferenceParams | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         """Forward pass for the NVMixtralForCausalLM model."""
+        # transformers>=5.24 renamed `past_key_values` to `cache` in generate().
+        if past_key_values is None:
+            past_key_values = cache
+
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1220,6 +1236,14 @@ class HFInferenceParams(InferenceParams):
     def is_compileable(self) -> bool:
         """Return False as this cache is not compatible with torch.compile."""
         return False
+
+    @property
+    def is_linear(self) -> list[bool]:
+        """Return False for every layer, as TE caches keys/values for standard (non-linear) attention.
+
+        Required by HuggingFace transformers>=5.24 generate() to decide whether to slice already-cached inputs.
+        """
+        return [False]
 
 
 @torch.compile(fullgraph=True)
