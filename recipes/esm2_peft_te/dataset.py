@@ -222,7 +222,7 @@ def create_dataloader(
             )
             collator = DataCollatorWithFlattening(return_flash_attn_kwargs=True)
             val_tokenized_dataset = TokenPackingDataset(
-                val_tokenized_dataset, max_tokens_per_batch=micro_batch_size * max_seq_length
+                val_tokenized_dataset, max_tokens_per_batch=val_micro_batch_size * max_seq_length
             )
             val_batch_size = None  # The TokenPackingDataset will handle the batching.
         else:
