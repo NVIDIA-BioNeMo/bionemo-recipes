@@ -57,6 +57,8 @@ from bionemo.evo2.models.megatron.hyena.hyena_hybrid_layer_allocation import all
 try:
     from megatron.core.extensions.transformer_engine import TENorm, te_checkpoint
 
+    from bionemo.evo2.models.megatron.hyena.inference_norm import get_hyena_norm
+
     HAVE_TE = True
     LayerNormImpl = TENorm
 
@@ -241,7 +243,7 @@ class HyenaStack(GraphableMegatronModule, MegatronModule):
         ]
         if self.post_process and self.post_layer_norm:
             # Final layer norm before output.
-            self.final_norm = TENorm(
+            self.final_norm = get_hyena_norm(
                 config=self.transformer_config,
                 hidden_size=self.transformer_config.hidden_size,
                 eps=self.transformer_config.layernorm_epsilon,
