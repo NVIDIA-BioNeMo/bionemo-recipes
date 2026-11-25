@@ -1,10 +1,10 @@
 # Runnable modality examples
 
-| Example                          | Raw inputs                          | Encoder           | Stages                                                 |
-| -------------------------------- | ----------------------------------- | ----------------- | ------------------------------------------------------ |
-| [Genetics](genetics/README.md)   | Eight short synthetic DNA sequences | Evo2-1B, layer 12 | Alignment, full decoder SFT, LoRA or full decoder GRPO |
-| [Chemistry](chemistry/README.md) | Eight simple SMILES strings         | NV-KERMT-70M-v2   | Alignment, full decoder SFT, LoRA or full decoder GRPO |
-| [LLaVA](llava/README.md)         | Images                              | CLIP              | Alignment, LoRA SFT, GRPO, inference                   |
+| Example                          | Raw inputs                          | Encoder            | Stages                                       |
+| -------------------------------- | ----------------------------------- | ------------------ | -------------------------------------------- |
+| [Genetics](genetics/README.md)   | Eight short synthetic DNA sequences | Evo2-20B, layer 12 | Alignment, full decoder SFT, GRPO, inference |
+| [Chemistry](chemistry/README.md) | Eight simple SMILES strings         | NV-KERMT-70M-v2    | Alignment, full decoder SFT, GRPO, inference |
+| [LLaVA](llava/README.md)         | Images                              | CLIP               | Alignment, LoRA SFT, GRPO, inference         |
 
 Genetics and chemistry share a chat-style JSONL input: `sample_id`, `messages`,
 and `answer`. Messages can interleave text blocks with encoder inputs:
@@ -56,10 +56,8 @@ worker and requires a compatible AutoModel base supplied through `BASE_IMAGE`.
 The image applies no framework source patches.
 
 The [Python container client](../clients/python/README.md) is bundled in this
-recipe and installed from the local build context. The container implementation
-is private, and **container publishing is still work in progress (WIP)**.
-The client does not supply an encoder container; genetics and chemistry require
-separately deployed compatible services.
+recipe and installed from the local build context. Genetics and chemistry
+connect to separately deployed encoder services.
 
 For an existing compatible NeMo environment, install this package and the
 selected example with `--no-deps`, install `./clients/python[numpy]` from the
@@ -82,15 +80,36 @@ URLs are not written into feature manifests or caches. Preparation fails on
 HTTP errors, invalid checksums, wrong layers/pooling, nonfinite features, or
 incompatible geometry. It never substitutes random features.
 
-Obtain the deployed encoder URLs and any access tokens from your service
-operator. Published image names and public server build instructions are not
-available yet. The service must expose the canonical `/v1/forward` API and the
-layers, pooling, and geometry required by the selected example.
+Use the public [Evo 2 perception container on NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/clara/containers/evo2-embed/-)
+for genetics. The 20B profile matches the shipped configs. The first launch
+downloads the selected checkpoint into the mounted cache. Run this on a
+supported Hopper GPU with enough memory for Evo 2-20B:
 
-For an Evo2-1B service exposing `decoder.layers.12` with window-64 mean pooling,
-set the gene YAML projector input widths to 1920; the shipped defaults use the
-production Evo2-20B width of 8192. KERMT must expose unpooled molecule, atom,
-and both bond branches. Keep the endpoint geometry and configuration aligned.
+```bash
+export EVO2_IMAGE=nvcr.io/nvidia/clara/evo2-embed:0.1.0
+export EVO2_CACHE_DIR="${EVO2_CACHE_DIR:-$HOME/.cache/bionemo/evo2-embed}"
+mkdir -p "$EVO2_CACHE_DIR"
+# The container runs as UID 1000. Give it write access to the cache before starting.
+docker pull "$EVO2_IMAGE"
+docker run --rm --gpus '"device=0"' --shm-size=16g -p 127.0.0.1:8000:8000 \
+  -v "$EVO2_CACHE_DIR:/opt/nim/.cache" \
+  -e EVO2_MODEL_ID=evo2-20b-1m \
+  -e EVO2_EMBEDDINGS_LAYER=decoder.layers.12 "$EVO2_IMAGE"
+```
+
+To use the 1B profile, set `EVO2_MODEL_ID=evo2-1b-8k` in the launch command
+and follow the [genetics configuration notes](genetics/README.md#setup) to
+use 1,920-wide features. Both profiles use layer 12 and window-64 mean pooling
+for this recipe.
+
+For chemistry, obtain the URL and any credentials for a compatible KERMT
+deployment from your service operator. The service must expose unpooled
+molecule, atom, and both bond branches through `/v1/forward`.
+
+The public ESM-3 perception image is
+`nvcr.io/nvidia/clara/esm3-embed:0.1.0`. It serves protein embeddings and is
+listed here for discovery alongside the Evo 2 image. See the
+[ESM-3 container on NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/clara/containers/esm3-embed/-).
 
 Stop encoder services after cache preparation to free their GPUs for training.
 
@@ -109,16 +128,17 @@ docker run --rm -it --gpus all --ipc=host --network host --cap-add SYS_PTRACE \
   -w "/opt/stitch/examples/$example" stitch-examples
 ```
 
-Inside the selected example directory, prepare the cache and download the base model:
+Inside the selected example directory, download the base model:
 
 ```bash
-python prepare.py
 hf download nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 \
   --revision b3caaabed0263651a17dc1f2d4ce97e794f76c44 \
   --local-dir artifacts/models/lightning-30b-bf16
 ```
 
-Both preparation scripts accept optional `--encoder-model MODEL_ID` and
+Run the preparation command in the [genetics](genetics/README.md#setup) or
+[chemistry](chemistry/README.md#setup) guide. Both scripts accept optional
+`--encoder-model MODEL_ID` and
 `--encoder-revision REVISION` flags. These record your declared encoder identity
 in the manifest header and cache contract, so different declarations produce
 different cache identities. Omitted values stay unknown (empty strings) and
@@ -157,18 +177,21 @@ THD packs in both supervised stages. The per-update token exposure changes;
 this is a recipe with production optimization settings, not bit-exact replay.
 Gene YAMLs directly configure the production Evo2-20B feature width (8192)
 and pooling window (64). Preparation reads those same values with
-`python prepare.py --config configs/alignment.yaml`; no encoder environment
-variables are needed. For a local Evo2-1B endpoint set the stage YAML projector
-input widths to 1920. Use a matching/new cache when changing encoder settings;
+`python prepare.py --config configs/alignment.yaml`. For a local Evo2-1B
+endpoint, set the stage YAML projector input widths to 1920. Use a new cache
+with matching geometry when changing encoder settings;
 span lengths are derived by the processor and are not dataset fields. The Dockerfile
 pins the production fused cross-entropy implementation. Each config cites its
 source recipe; loss reduction, precision, scheduler, and distributed settings
 come from that source. Launch topology lives in the application, including the
 paired Super multinode launch. There is no single-node memory-tuning overlay.
 
+### Bundled-data sanity run
+
 The eight short rows pack into fewer than eight training samples. The pinned
 AutoModel distributed sampler drops incomplete rank groups, so the original
 manifest gives empty loaders on eight ranks; more epochs cannot repair this.
+
 For a bounded sanity run, write a separate repeated view of the prepared
 manifest. Unique sample IDs reuse the same checksummed feature keys, so this
 makes no additional encoder requests and leaves the published cache intact.
@@ -190,16 +213,9 @@ source.with_name("manifest-sanity.jsonl").write_text(
 )
 ```
 
-Run both stages with the repeated view and explicit three-update bounds:
-
-```bash
-for stage in alignment sft; do
-  torchrun --nproc-per-node 8 -m nemo_automodel.cli.app "configs/$stage.yaml" \
-    --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
-    --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
-    --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
-done
-```
+Use this repeated view with the alignment and SFT commands in the
+[genetics](genetics/README.md#1-alignment) and
+[chemistry](chemistry/README.md#1-alignment) guides.
 
 Keep the `--` prefix on every AutoModel override: the pinned parser silently
 ignores bare `key=value` arguments. After changing raw data, tokenizer, pack
@@ -247,5 +263,22 @@ recipes; THD packing applies to alignment and SFT.
 The eight-row data cannot supply the production rollout batch. For a bounded
 sanity GRPO run, override the prompt count, global batch, duration, and epoch
 limit explicitly. Qualification on production data keeps the production batch
-and node topology. Use the native NeMo RL/Ray multinode launch rather than
-launching these configs on only the local eight GPUs.
+and node topology. For the shipped topology, join the nodes to the same Ray
+cluster before launching the runner once on the head node. Use the same image and make the model,
+prepared data, and SFT artifacts available at identical paths on every node.
+See [NeMo RL's cluster setup](https://docs.nvidia.com/nemo/rl/latest/cluster.html).
+
+## Inference with prepared DNA or SMILES features
+
+The genetics and chemistry inference commands use the same dataset processor,
+frozen SFT projectors, and vLLM plugin as GRPO rollouts. The tokenizer comes
+from the original model snapshot. The helper generates from the first
+prepared GRPO record by default. Use `--record-index` to select another row or
+`--tensor-parallel-size` to match your GPU allocation and model memory requirements.
+
+The helper uses vLLM's [Python generation API](https://docs.vllm.ai/en/stable/features/multimodal_inputs/#embedding-inputs)
+to send the custom modality's projected tensors with the rendered prompt. To
+use a new input, prepare it with the matching perception endpoint and point the
+config's manifest and cache paths at that prepared data. For an HTTP service,
+the application needs to run the same input preparation and projection before
+calling vLLM.

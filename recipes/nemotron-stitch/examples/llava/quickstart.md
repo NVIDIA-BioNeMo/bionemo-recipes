@@ -189,10 +189,9 @@ python -m pip install './clients/python[torch]'
 ```
 
 The shared examples Dockerfile includes the client. See its local README for requests,
-authentication, and tensor decoding. **Container publishing is still work in
-progress (WIP)**. The container implementation is private; you need a separately
-deployed compatible service and its URL. Installing the client does not start
-or provide an encoder container.
+authentication, and tensor decoding. Use the
+[encoder setup guide](../README.md#connect-to-the-encoders) to select a
+compatible service and get its URL.
 
 Use the client inside your application's encoder callable and decode the
 selected response tensors into the feature geometry expected by your projector.
@@ -365,9 +364,9 @@ Run alignment, then SFT:
 
 ```bash
 docker exec llava-example \
-  python -m nemo_automodel.cli.app configs/alignment.yaml --nproc-per-node 1
+  torchrun --nproc-per-node 1 -m nemo_automodel.cli.app configs/alignment.yaml
 docker exec llava-example \
-  python -m nemo_automodel.cli.app configs/sft.yaml --nproc-per-node 1
+  torchrun --nproc-per-node 1 -m nemo_automodel.cli.app configs/sft.yaml
 ```
 
 If the application has an automatic reward, continue with GRPO. The example

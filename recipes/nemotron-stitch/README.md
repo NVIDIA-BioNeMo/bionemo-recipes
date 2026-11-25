@@ -23,9 +23,11 @@ prompt format, and evaluation logic.
 - [`examples/llava/quickstart.md`](examples/llava/quickstart.md) explains how to
   replace the image-specific pieces with your own encoder and paired data.
 - [`examples/genetics/`](examples/genetics/README.md) and
-  [`examples/chemistry/`](examples/chemistry/README.md) show alignment and full
-  decoder SFT plus GRPO configurations, with bundled raw DNA/SMILES inputs and
-  endpoint-based Evo2/KERMT cache preparation. See [example setup](examples/README.md).
+  [`examples/chemistry/`](examples/chemistry/README.md) walk through alignment, full
+  decoder SFT, GRPO, and inference using bundled DNA and SMILES examples.
+  Use the [public Evo 2 perception container on NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/clara/containers/evo2-embed/-)
+  for genetics or a deployed KERMT service for chemistry. See the
+  [encoder setup](examples/README.md#connect-to-the-encoders).
 
 Each example is small enough to read as one application module,
 while exercising the same package paths used by larger training jobs.
@@ -136,10 +138,10 @@ boundary without changing the projector or framework contracts.
 For encoders served by BioNeMo Perception Containers, this recipe includes the
 [`bionemo-perception-client` Python container client](clients/python/README.md).
 It provides HTTP clients and a binary tensor-response parser; install it from
-`clients/python` in this checkout. **Container publishing is still work in
-progress (WIP)**. You need a separately deployed compatible service; the
-container implementation is private. Application code owns decoding responses
-into feature tensors; see the
+`clients/python` in this checkout. See the
+[encoder setup](examples/README.md#connect-to-the-encoders) for public images
+and service requirements. Application code owns decoding responses into
+feature tensors. See the
 [container-client guidance](examples/llava/quickstart.md#container-client-optional).
 
 ### Framework integration

@@ -9,6 +9,87 @@ indices during preparation; learned featurization stays in the endpoint. The
 shared image installs RDKit. In another environment, install this example with
 its `[preparation]` extra.
 
+## Setup
+
+Use a [deployed KERMT service](../README.md#connect-to-the-encoders).
+The endpoint must support `molecule_fingerprint`,
+`atom_concat`, `bond_from_atom`, and `bond_from_bond`, all without pooling.
+Follow the [shared image setup](../README.md#build-the-training-environment)
+and [training shell instructions](../README.md#prepare-and-train) with
+`example=chemistry`. Download the pinned Lightning checkpoint in that shell.
+Run the commands below from `examples/chemistry`, the container's working
+directory for this example.
+
+Set `KERMT_URL` and optionally `KERMT_TOKEN` before starting the training shell.
+
+```bash
+python prepare.py
+```
+
+## 1. Alignment
+
+For the bundled data, create the [repeated sanity manifest](../README.md#bundled-data-sanity-run)
+before launching on eight GPUs. The command runs three updates and writes
+the trained projector artifact under `outputs/alignment/projector/`.
+
+```bash
+torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment.yaml \
+  --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
+  --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
+  --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
+```
+
+## 2. SFT
+
+SFT loads the aligned projector and trains it with the decoder. Use the same
+sanity manifest. The final consolidated decoder is under
+`outputs/sft/checkpoints/LATEST/model/consolidated/`, and the updated
+projector artifact is under `outputs/sft/projector/`.
+
+```bash
+torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft.yaml \
+  --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
+  --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
+  --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
+```
+
+For production alignment and SFT, point the configs at your prepared manifests
+and launch the same configs with their training budgets.
+
+## 3. GRPO
+
+Join two eight-GPU nodes to the [shared Ray cluster](../README.md#grpo),
+then run the command once from the head node. The config loads the consolidated
+SFT decoder and freezes the SFT projector artifact. The overrides below let
+the eight bundled prompts fit a single rollout batch of 64 generations.
+
+```bash
+python -m nemotron_stitch.nemo_rl.runner --config configs/grpo.yaml \
+  grpo.num_prompts_per_step=8 policy.train_global_batch_size=64 \
+  grpo.max_num_steps=1 grpo.max_num_epochs=1 grpo.use_dynamic_sampling=false \
+  checkpointing.save_period=1
+```
+
+GRPO writes checkpoints under `outputs/grpo/checkpoints/`. For production
+training, launch the same config with its rollout batch and training budget
+on your prepared data.
+
+## 4. Inference
+
+Generate an answer from the first prepared SMILES record with the trained SFT
+decoder and projector. Run this inside the example container on four GPUs:
+
+```bash
+/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker/bin/python \
+  ../scripts/infer_prepared.py --config configs/grpo.yaml
+```
+
+To use full-decoder GRPO weights, pass the GRPO checkpoint's consolidated
+model directory with `--model`. See the [shared inference notes](../README.md#inference-with-prepared-dna-or-smiles-features)
+for preparing new inputs and choosing a GPU count.
+
+## Input format and model wiring
+
 Each JSONL record uses the same chat structure as the genetics example:
 
 ```json
@@ -77,11 +158,6 @@ The optional `molecule_processor` callable is used by
 Native inputs and processing options go to the base instance; its output fields
 are preserved. The cached training path supplies features through the dataset,
 so it does not run an encoder during chat formatting.
-
-Follow the [setup, local endpoint, training, and test commands](../README.md).
-Set `KERMT_URL` and optionally `KERMT_TOKEN`, then run `python prepare.py` from
-this folder. The endpoint must support `molecule_fingerprint`, `atom_concat`,
-`bond_from_atom`, and `bond_from_bond`, all without pooling.
 
 [chemistry_example.py](chemistry_example.py) registers the native Lightning host
 with three independent `mlp2x_gelu` projectors into its 2,688-wide embedding
