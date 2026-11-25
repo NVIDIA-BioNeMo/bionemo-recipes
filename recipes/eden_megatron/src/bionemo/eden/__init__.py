@@ -14,3 +14,8 @@
 # limitations under the License.
 
 """Eden package."""
+
+from bionemo.common.megatron_compat import patch_megatron_load_tensors_metadata
+
+
+patch_megatron_load_tensors_metadata()

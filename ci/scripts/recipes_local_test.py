@@ -51,7 +51,7 @@ CUSTOM_CONTAINERS = {
     "recipes/nemotron-stitch": "svcbionemo023/bionemo-framework:nemo-rl-ci-9a842983-amd64@sha256:b246d90d969277441bbce418bd895c3f9a4ef5e0ab47587b6f4e0c91ad84af48",
 }
 
-DEFAULT_CONTAINER = "nvcr.io/nvidia/pytorch:26.09-py3"
+DEFAULT_CONTAINER = "nvcr.io/nvidia/pytorch:26.10-py3"
 
 
 def get_git_root() -> str:
