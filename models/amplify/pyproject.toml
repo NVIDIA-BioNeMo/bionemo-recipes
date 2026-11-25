@@ -18,7 +18,7 @@ dependencies = [
     "pyarrow<26",                        # pyarrow 26 requires NumPy>=2; the AMPLIFY container ships NumPy 1.26
     "pytest",
     "setuptools<82",
-    "torch==2.6.0a0+ecf3bae40a.nv25.01",
+    "torch==2.13.0",
     "transformer_engine[pytorch]",
     "transformers<5.0",                  # TODO(BIO-143): update AMPLIFY to support Transformers v5
     "xformers",
