@@ -2,9 +2,9 @@
 
 `bionemo-perception-client` is the **container client** included with this
 Nemotron Stitch recipe. It queries an encoder service over HTTP; it does not
-include or launch an encoder model or server. **Container publishing is still
-work in progress (WIP)**. The container implementation is private. To use this
-client, obtain the URL of an independently deployed compatible service.
+include or launch an encoder model or server. Use the
+[encoder setup guide](../../examples/README.md#connect-to-the-encoders) for the
+public Evo 2 and ESM-3 images and the KERMT endpoint requirements.
 
 The package provides typed Evo 2, ESM-3, and KERMT clients and a model-neutral
 parser for `BNMOFWD1` tensor envelopes (and legacy `BNMOFWD2` framing). It sends canonical `/v1/forward` requests,

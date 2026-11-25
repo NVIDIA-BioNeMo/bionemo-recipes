@@ -164,18 +164,69 @@ single-token sentinels. Pass those values and the output path directly to the
 same preparation entry point; the underlying CLIP features and row selection
 are otherwise identical.
 
-## Training
+<a id="training"></a>
 
-The 4B control's three stages run on one GPU with at least 80 GB HBM:
+## 1. Alignment
+
+The 4B control runs on one GPU with at least 80 GB HBM. Alignment trains the
+projector and exports it to `outputs/alignment/projector/`.
 
 ```bash
-docker exec llava-example python -m nemo_automodel.cli.app configs/alignment.yaml --nproc-per-node 1
-docker exec llava-example python -m nemo_automodel.cli.app configs/sft.yaml --nproc-per-node 1
+docker exec llava-example torchrun --nproc-per-node 1 -m nemo_automodel.cli.app configs/alignment.yaml
+```
+
+## 2. SFT
+
+SFT loads the aligned projector and trains it with a LoRA adapter. It writes
+the updated projector under `outputs/sft/projector/` and the adapter under
+`outputs/sft/checkpoints/`.
+
+```bash
+docker exec llava-example torchrun --nproc-per-node 1 -m nemo_automodel.cli.app configs/sft.yaml
+```
+
+## 3. GRPO
+
+GRPO reads the SFT adapter via `outputs/sft/checkpoints/LATEST`, freezes
+the SFT projector, and writes the updated adapter under
+`outputs/grpo/checkpoints/`.
+
+```bash
 docker exec llava-example python -m nemotron_stitch.nemo_rl.runner --config configs/grpo.yaml
 ```
 
-The SFT checkpointer maintains `checkpoints/LATEST`, which the GRPO config reads
-directly; there is no checkpoint path to copy by hand.
+<a id="inference"></a>
+
+## 4. Inference
+
+The trained model is three artifacts — the pristine base snapshot, the SFT
+projector export (warm-started from alignment, then jointly trained with the
+adapter), and the LoRA adapter. `scripts/infer.py` loads all three for offline
+inference. The pinned frozen CLIP encodes the supplied image (resolved from the HF
+cache by repo id and revision, exactly as `llava_example.py` encoded the
+training data), the trained projector turns the features into soft tokens, the
+adapter is merged into the base weights (the same merge GRPO's refit
+performs in memory at every update), and the example's vLLM plugin
+generates, with the prompt rendered byte-identically to the GRPO rollout:
+
+```bash
+docker exec llava-example \
+  /opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker/bin/python \
+  scripts/infer.py --adapter outputs/grpo/checkpoints \
+    --input /opt/stitch/examples/llava/outputs/my-image.jpg \
+    --question "How many objects are in the image?"
+```
+
+`--adapter` accepts the checkpoints root (the latest step is selected and
+printed) or one specific PEFT directory — point it at
+`outputs/sft/checkpoints` to compare the SFT adapter against the GRPO one.
+The merge is pure safetensors on CPU (~8 GiB for the 4B), no peft or model
+instantiation. The `outputs/` mount is host-visible, so dropping an image
+there is the easy path into the container. The SFT/GRPO slices were
+CLEVR-Math, so counting-style questions (answered "The answer is N") show
+the trained behavior best.
+
+## GRPO variants
 
 ### GRPO with a trainable projector
 
@@ -464,36 +515,6 @@ GRPO's layout is NeMo RL's checkpointer (`step_<N>`; `save_period` and
 `keep_top_k` in `configs/grpo.yaml`). The GRPO policy loads SFT's projector
 export into a sidecar-held projector; the package suite verifies that handoff.
 AutoModel's `checkpoints/LATEST` link selects the SFT adapter for GRPO.
-
-## Inference
-
-The trained model is three artifacts — the pristine base snapshot, the SFT
-projector export (warm-started from alignment, then jointly trained with the
-adapter), and the LoRA adapter — and the base is the one training never
-touches. `scripts/infer.py` serves all three together on any image you hand
-it: the pinned frozen CLIP encodes the image online (resolved from the HF
-cache by repo id and revision, exactly as `llava_example.py` encoded the
-training data), the trained projector turns the features into soft tokens, the
-adapter is merged into the base weights (the same merge GRPO's refit
-performs in memory at every update), and the example's vLLM plugin
-generates, with the prompt rendered byte-identically to the GRPO rollout:
-
-```bash
-docker exec llava-example \
-  /opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker/bin/python \
-  scripts/infer.py --adapter outputs/grpo/checkpoints \
-    --input /opt/stitch/examples/llava/outputs/my-image.jpg \
-    --question "How many objects are in the image?"
-```
-
-`--adapter` accepts the checkpoints root (the latest step is selected and
-printed) or one specific PEFT directory — point it at
-`outputs/sft/checkpoints` to compare the SFT adapter against the GRPO one.
-The merge is pure safetensors on CPU (~8 GiB for the 4B), no peft or model
-instantiation. The `outputs/` mount is host-visible, so dropping an image
-there is the easy path into the container. The SFT/GRPO slices were
-CLEVR-Math, so counting-style questions (answered "The answer is N") show
-the trained behavior best.
 
 ## Tests
 

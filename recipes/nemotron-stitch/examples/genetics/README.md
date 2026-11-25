@@ -6,6 +6,111 @@ sequences. [prepare.py](prepare.py) sends the raw sequences to an Evo2
 perception endpoint and builds the feature cache and all three stage manifests.
 No biological data download or corpus builder is needed.
 
+## Setup
+
+Start the public [Evo 2 perception container on NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/clara/containers/evo2-embed/-)
+(`nvcr.io/nvidia/clara/evo2-embed:0.1.0`) using the
+[encoder launch command](../README.md#connect-to-the-encoders). Follow the
+[shared image setup](../README.md#build-the-training-environment) and
+[training shell instructions](../README.md#prepare-and-train) with
+`example=genetics`. Download the pinned Lightning checkpoint in that shell.
+Run the commands below from `examples/genetics`, the container's working
+directory for this example.
+
+Production-default mean-loss alignment requires AutoModel equal-pack loss normalization support; the
+shared Dockerfile's stock CI base rejects that loss configuration. Supply a
+compatible base carrying the fix through `--build-arg BASE_IMAGE=...`. The base
+must use the current `AutomodelPolicyWorker` interpreter layout; historical
+`DTensorPolicyWorkerV2` campaign images cannot be substituted directly.
+
+Set `EVO2_URL` and optionally `EVO2_TOKEN` before starting the training shell.
+
+```bash
+python prepare.py --config configs/alignment.yaml
+```
+
+Preparation reads encoder width from `model.mm_projectors[0].mm_hidden_size`
+and pooling width from `dataset.chat_template_kwargs.pooling_window`. The
+shipped YAMLs use production Evo2-20B defaults: **8192** features and **64** bases
+per mean-pooling window. The client requests `decoder.layers.12`; features must
+be finite `[ceil(bases / pooling_window), encoder_width]`. The processor derives
+span lengths from this pooling configuration; counts are not dataset fields.
+
+For an Evo2-1B endpoint, set `mm_hidden_size: 1920` in the selected stage YAMLs.
+Keep alignment, SFT, and GRPO settings consistent. GRPO's corresponding fields
+are `policy.hf_config_overrides.mm_projectors[0].mm_hidden_size` and
+`policy.tokenizer.chat_template_kwargs.pooling_window`. Use a new cache and output
+directory when changing encoder or pooling settings. Retain matching endpoint and cache provenance. Collation
+and GRPO transport reject spans that disagree with actual cached features.
+
+## 1. Alignment
+
+For the bundled data, create the [repeated sanity manifest](../README.md#bundled-data-sanity-run)
+before launching on eight GPUs. The command runs three updates and writes
+the trained projector artifact under `outputs/alignment/projector/`.
+
+```bash
+torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment.yaml \
+  --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
+  --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
+  --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
+```
+
+## 2. SFT
+
+SFT loads the aligned projector and trains it with the decoder. Use the same
+sanity manifest. The final consolidated decoder is under
+`outputs/sft/checkpoints/LATEST/model/consolidated/`, and the updated
+projector artifact is under `outputs/sft/projector/`.
+
+```bash
+torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft.yaml \
+  --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
+  --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
+  --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
+```
+
+For production alignment and SFT, point the configs at your prepared manifests
+and launch the same configs with their training budgets.
+
+## 3. GRPO
+
+Join four eight-GPU nodes to the [shared Ray cluster](../README.md#grpo),
+then run the command once from the head node. The config loads the consolidated
+SFT decoder and freezes the SFT projector artifact. The overrides below let
+the eight bundled prompts fit a single rollout batch of 64 generations.
+
+```bash
+python -m nemotron_stitch.nemo_rl.runner --config configs/grpo.yaml \
+  grpo.num_prompts_per_step=8 policy.train_global_batch_size=64 \
+  grpo.max_num_steps=1 grpo.max_num_epochs=1 grpo.use_dynamic_sampling=false \
+  checkpointing.save_period=1
+```
+
+The Lightning policy uses EP8 with `dp_replicate_size: 1`. The smoke override
+also disables dynamic sampling so uniform rewards on a barely trained donor
+cannot exhaust the generation cap before an update.
+
+GRPO writes checkpoints under `outputs/grpo/checkpoints/`. For production
+training, launch the same config with its rollout batch and training budget
+on your prepared data.
+
+## 4. Inference
+
+Generate an answer from the first prepared DNA record with the trained SFT
+decoder and projector. Run this inside the example container on four GPUs:
+
+```bash
+/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker/bin/python \
+  ../scripts/infer_prepared.py --config configs/grpo.yaml
+```
+
+For GRPO inference, merge the trained LoRA adapter into its SFT donor, then
+pass that consolidated model directory with `--model`. See the [shared inference notes](../README.md#inference-with-prepared-dna-or-smiles-features)
+for preparing new inputs and choosing a GPU count.
+
+## Input format and model wiring
+
 Each JSONL record uses a chat message with interleaved content blocks:
 
 ```json
@@ -39,43 +144,6 @@ loaded with `AutoProcessor.from_pretrained`. It delegates native inputs and
 chat formatting to that instance. An optional `sequence_processor` callable
 can supply feature fields through `processor(text=..., sequences=..., **kwargs)`;
 the demo's cached training path already carries those features in the dataset.
-
-Follow the [setup, local endpoint, training, and test commands](../README.md).
-
-Production-default mean-loss alignment requires AutoModel equal-pack loss normalization support; the
-shared Dockerfile's stock CI base rejects that loss configuration. Supply a
-compatible base carrying the fix through `--build-arg BASE_IMAGE=...`. The base
-must use the current `AutomodelPolicyWorker` interpreter layout; historical
-`DTensorPolicyWorkerV2` campaign images cannot be substituted directly.
-
-The 32-GPU Lightning GRPO layout uses EP8 and an inferred four-way DP shard
-axis (`dp_replicate_size: 1`). NeMo RL `b03da0f4` rejects EP combined with dense
-DP replication; the older reference's `dp_replicate_size: 4` is unsupported.
-For a short smoke starting from a barely trained SFT donor, override
-`grpo.use_dynamic_sampling=false`: uniform rewards can otherwise keep sampling
-without reaching an optimizer step. The production default remains enabled;
-the all-uniform generation-cap failure is recorded in the demos campaign.
-
-Set `EVO2_URL` and optionally `EVO2_TOKEN`, then run:
-
-```bash
-python prepare.py --config configs/alignment.yaml
-```
-
-Preparation reads encoder width from `model.mm_projectors[0].mm_hidden_size`
-and pooling width from `dataset.chat_template_kwargs.pooling_window`. The
-shipped YAMLs use production Evo2-20B defaults: **8192** features and **64** bases
-per mean-pooling window. The client requests `decoder.layers.12`; features must
-be finite `[ceil(bases / pooling_window), encoder_width]`. The processor derives
-span lengths from this pooling configuration; counts are not dataset fields.
-
-For an Evo2-1B endpoint, set `mm_hidden_size: 1920` in the selected stage YAMLs.
-Keep alignment, SFT, and GRPO settings consistent. GRPO's corresponding fields
-are `policy.hf_config_overrides.mm_projectors[0].mm_hidden_size` and
-`policy.tokenizer.chat_template_kwargs.pooling_window`. No encoder environment
-variables are required. Use a new cache/output directory when changing encoder
-or pooling settings, and retain matching endpoint/cache provenance. Collation
-and GRPO transport reject spans that disagree with actual cached features.
 
 [genetics_example.py](genetics_example.py) registers a Lightning host with a
 `mlp2x_gelu_norm` projector (`8192 → 4096 → 2688`). DNA features replace token
@@ -145,19 +213,57 @@ docker build -f examples/Dockerfile --target super \
   -t stitch-examples:super .
 ```
 
-In a shell launched from that image
-using the shared mount/GPU instructions, download the Super checkpoint and run:
+### Super VL setup
+
+Use the shared training shell instructions with the Super image and download
+the pinned checkpoint. Reuse the prepared DNA cache with matching encoder
+settings in the Super YAMLs.
 
 ```bash
 hf download nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 \
   --revision a1ccf94d69377bf82c4db39798aac28447d9c16f \
   --local-dir artifacts/models/super-vl-bf16
-# Reuse the prepared DNA cache, with YAML encoder settings matching that cache.
-torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment-super.yaml
-torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft-super.yaml
+```
+
+### Super VL alignment
+
+Use the [alignment settings above](#1-alignment) for the bundled sanity
+manifest and step bounds.
+
+```bash
+torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/alignment-super.yaml \
+  --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
+  --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
+  --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
+```
+
+### Super VL SFT
+
+```bash
+torchrun --nproc-per-node 8 -m nemo_automodel.cli.app configs/sft-super.yaml \
+  --dataset.manifest_path=artifacts/data/manifest-sanity.jsonl \
+  --step_scheduler.max_steps=3 --step_scheduler.num_epochs=1000 \
+  --step_scheduler.ckpt_every_steps=3 --step_scheduler.save_checkpoint_every_epoch=false
+```
+
+### Super VL GRPO
+
+Use the same [Ray launch and bundled-data overrides](#3-grpo), selecting
+`configs/grpo-super.yaml` for LoRA or `configs/grpo-super-full.yaml` for full
+decoder training. For production data, run:
+
+```bash
 python -m nemotron_stitch.nemo_rl.runner --config configs/grpo-super.yaml
-# Full language-decoder GRPO, with the same frozen DNA projector:
-python -m nemotron_stitch.nemo_rl.runner --config configs/grpo-super-full.yaml
+```
+
+### Super VL inference
+
+Use the Super SFT decoder and projector with the Super vLLM plugin by selecting
+the corresponding config. Size tensor parallelism for the Super checkpoint.
+
+```bash
+/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker/bin/python \
+  ../scripts/infer_prepared.py --config configs/grpo-super.yaml --tensor-parallel-size 8
 ```
 
 The Super config inherits the shared GRPO batching, context, and memory settings.

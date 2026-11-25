@@ -31,9 +31,12 @@ For DNA or molecular inputs, also read
 `$BIONEMO_RECIPES/recipes/nemotron-stitch/examples/genetics/README.md` or
 `$BIONEMO_RECIPES/recipes/nemotron-stitch/examples/chemistry/README.md`.
 These examples use perception endpoints and typed chat blocks, packed
-alignment/SFT, and full decoder SFT. LLaVA remains the LoRA and inference
-reference. Each example is an independently installed vLLM plugin; install it
-in every generation-worker interpreter, including executor subprocesses.
+alignment/SFT, and full decoder SFT. The shared examples guide links the public
+Evo 2 image and the KERMT endpoint requirements. For inference, genetics and chemistry
+reuse prepared inputs and the GRPO rollout processor. LLaVA shows how to encode
+a new image and run inference with a LoRA adapter. Each example is an independently
+installed vLLM plugin. Install it in every generation-worker interpreter,
+including executor subprocesses.
 
 ## Build the application boundary
 
@@ -57,9 +60,9 @@ projector artifacts for stage handoffs.
 For container-backed encoders, consult the quickstart's optional container-client
 guidance and the bundled client documented in
 `$BIONEMO_RECIPES/recipes/nemotron-stitch/clients/python/README.md`. Identify it as the
-Python HTTP client for BioNeMo Perception Containers. Container publishing is
-still WIP and the container implementation is private. Install the client from
-the recipe checkout and require a separately deployed compatible service. Keep client calls and response decoding in the
+Python HTTP client for BioNeMo Perception Containers. Install it from the
+recipe checkout and connect to a compatible service. The shared examples guide
+lists the public Evo 2 and ESM-3 images. Keep client calls and response decoding in the
 application; the local CLIP example does not require this client.
 For authenticated services, use the final forward URL: bearer authorization
 is omitted on all redirects. Zero-extent wire outputs convert to empty CPU
