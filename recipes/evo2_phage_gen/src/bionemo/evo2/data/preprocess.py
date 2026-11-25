@@ -407,7 +407,8 @@ class Evo2Preprocessor:
         # Validate if binaries have already been produced for the given config and overwrite is set to False.
         if any(
             self._get_output_filename(preproc_config, ext, split).is_file()
-            for ext, split in zip([self.BIN, self.IDX], [self.TRAIN, self.VAL, self.TEST])
+            for ext in [self.BIN, self.IDX]
+            for split in [self.TRAIN, self.VAL, self.TEST]
         ):
             if not preproc_config.overwrite:
                 # Skip this dataset!
