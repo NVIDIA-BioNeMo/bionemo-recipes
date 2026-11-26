@@ -19,6 +19,7 @@ import argparse
 import logging
 import re
 import textwrap
+from codecs import BOM_UTF8
 from datetime import datetime
 from pathlib import Path
 
@@ -56,29 +57,51 @@ copyright_regex_pattern = (
 license_regex_pattern = copyright_regex_pattern + re.escape(license_text)
 license_regex = re.compile(license_regex_pattern)
 
+# PEP 263 permits a coding cookie on the first line, or on the second line
+# when the first line contains only a comment or whitespace.
+_PYTHON_CODING_COOKIE = re.compile(rb"^[ \t\f]*#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+")
+_PYTHON_COOKIE_PREFIX = re.compile(rb"^[ \t\f]*(?:[#\r\n]|$)")
+
 # Basic regex sanity checks.
 assert re.compile(copyright_regex_pattern).match(default_copyright_text), "Default copyright text not valid"
 assert license_regex.match(default_combined_license), "Default license text or regex is not valid"
 
 
+def _preamble_length(lines: list[bytes], *, python_source: bool) -> int:
+    """Count the initial lines that must stay ahead of an inserted header."""
+    if not lines:
+        return 0
+
+    first = lines[0]
+    if python_source:
+        if _PYTHON_CODING_COOKIE.match(first):
+            return 1
+        if len(lines) > 1 and _PYTHON_COOKIE_PREFIX.match(first) and _PYTHON_CODING_COOKIE.match(lines[1]):
+            return 2
+
+    return int(first.startswith(b"#!"))
+
+
 def process_file(filepath: Path, dry_run: bool):
     """Process a file to ensure it has a valid license block, or add a new one if it doesn't."""
     comment_start = get_comment_delimiter(filepath)
-    lines = filepath.read_text().splitlines()
+    comment_bytes = comment_start.encode("ascii")
+    source = filepath.read_bytes()
+    bom = BOM_UTF8 if source.startswith(BOM_UTF8) else b""
+    lines = source[len(bom) :].splitlines(keepends=True)
 
-    start_line = 0
-    if lines and lines[0].startswith("#!"):
-        # Make sure there's a blank line after the shebang
-        if lines[1] != "":
-            lines.insert(1, "")
-        start_line = 2
+    start_line = _preamble_length(lines, python_source=filepath.suffix == ".py")
+    needs_separator = start_line > 0
+    if needs_separator and start_line < len(lines) and not lines[start_line].strip():
+        start_line += 1
+        needs_separator = False
 
     license_block = []
     for line in lines[start_line:]:
-        if line.startswith(comment_start):
-            license_block.append(line)
-        else:
+        if not line.startswith(comment_bytes):
             break
+        # The required header is ASCII. Inspect it without decoding the source.
+        license_block.append(line.rstrip(b"\r\n").decode("ascii", errors="replace"))
 
     def uncomment(text: str) -> str:
         return re.sub(rf"^{comment_start}\ ?", "", text)
@@ -93,13 +116,21 @@ def process_file(filepath: Path, dry_run: bool):
         return
 
     logger.info(f"Adding license block to {filepath}.")
-    license_lines = "\n".join([default_copyright_text, license_text])
-    license_lines = textwrap.indent(license_lines, comment_start + " ", predicate=lambda _: True)
-    license_lines = "\n".join(line.rstrip() for line in license_lines.splitlines()) + "\n"
-    lines.insert(start_line, license_lines)
+    if dry_run:
+        return
 
-    if not dry_run:
-        filepath.write_text("\n".join(lines) + "\n")
+    first_line_break = re.search(rb"\r\n?|\n", source)
+    newline = first_line_break[0] if first_line_break else b"\n"
+    preamble = bom + b"".join(lines[:start_line])
+    if start_line and not preamble.endswith((b"\r", b"\n")):
+        preamble += newline
+    if needs_separator:
+        preamble += newline
+
+    header = newline.join(
+        f"{comment_start} {line}".rstrip().encode("ascii") for line in default_combined_license.splitlines()
+    )
+    filepath.write_bytes(preamble + header + newline * 2 + b"".join(lines[start_line:]))
 
 
 def get_comment_delimiter(filepath: Path) -> str:
