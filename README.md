@@ -1,5 +1,7 @@
 # BioNeMo Recipes
 
+Read the [contribution guide](CONTRIBUTING.md) before opening a pull request.
+
 BioNeMo Recipes provides an easy path for the biological foundation model training community to scale up transformer-based models efficiently. Rather than offering a batteries-included training framework, BioNeMo Recipes provide **model checkpoints** with TransformerEngine (TE) layers and **training recipes** that demonstrate how to achieve maximum throughput with popular open-source frameworks and fully sharded data parallel (FSDP) scale-out.
 
 ## Overview
